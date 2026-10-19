@@ -1,16 +1,13 @@
 package com.example.data.local
 
-import androidx.room.Entity
-import androidx.room.PrimaryKey
 import com.example.data.model.DownloadedTrackItem
 import com.example.data.model.MusicItem
 import com.example.data.model.PlaylistPrivacy
 import com.example.data.model.PlaylistSourceType
 import com.example.data.model.UserLibraryPlaylist
 
-@Entity(tableName = "library_playlists")
 data class LibraryPlaylistEntity(
-    @PrimaryKey val id: String,
+    val id: String,
     val title: String,
     val subtitle: String,
     val thumbnailUrl: String,
@@ -44,7 +41,6 @@ data class LibraryPlaylistEntity(
     }
 }
 
-@Entity(tableName = "playlist_tracks", primaryKeys = ["playlistId", "trackId"])
 data class PlaylistTrackEntity(
     val playlistId: String,
     val trackId: String,
@@ -82,9 +78,8 @@ data class PlaylistTrackEntity(
     }
 }
 
-@Entity(tableName = "downloaded_tracks")
 data class DownloadedTrackEntity(
-    @PrimaryKey val id: String,
+    val id: String,
     val videoId: String?,
     val title: String,
     val subtitle: String,

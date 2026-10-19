@@ -67,18 +67,28 @@ jobs:
               -dname "CN=BitChord Release,O=BitChord,C=ID"
           fi
 
-      - name: Build Optimized Release & Debug APK
+      - name: Build Optimized Release APK
         run: |
-          gradle assembleRelease assembleDebug \
+          gradle assembleRelease \
             -Djava.awt.headless=true \
-            -Pkotlin.compiler.execution.strategy=daemon \
+            --no-daemon \
+            --no-configuration-cache \
+            --stacktrace
+
+      - name: Build Debug APK
+        run: |
+          gradle assembleDebug \
+            -Djava.awt.headless=true \
+            --no-daemon \
             --no-configuration-cache \
             --stacktrace
 
       - name: Prepare APK Files for Download
         run: |
-          cp app/build/outputs/apk/release/app-release.apk BitChord-release.apk
-          cp app/build/outputs/apk/debug/app-debug.apk BitChord-debug.apk
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          DEBUG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          cp "$RELEASE_APK" BitChord-release.apk
+          cp "$DEBUG_APK" BitChord-debug.apk
           ls -lh BitChord-release.apk BitChord-debug.apk
 
       - name: Upload Release APK (Recommended 120FPS) to Artifacts
@@ -99,6 +109,9 @@ jobs:
 
       - name: Publish APKs to GitHub Releases
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}

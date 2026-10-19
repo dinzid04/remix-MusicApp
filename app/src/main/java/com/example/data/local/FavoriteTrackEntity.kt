@@ -1,12 +1,9 @@
 package com.example.data.local
 
-import androidx.room.Entity
-import androidx.room.PrimaryKey
 import com.example.data.model.MusicItem
 
-@Entity(tableName = "favorite_tracks")
 data class FavoriteTrackEntity(
-    @PrimaryKey val id: String,
+    val id: String,
     val title: String,
     val subtitle: String,
     val thumbnailUrl: String,
@@ -42,4 +39,3 @@ data class FavoriteTrackEntity(
         }
     }
 }
-
