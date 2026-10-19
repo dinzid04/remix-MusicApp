@@ -1,0 +1,6 @@
+{
+  "summary": "Rencana perombakan 100% tampilan halaman Perpustakaan (Library) agar identik secara visual dan tata letak dengan screenshot referensi (Screenshot_20261019_205838 & Screenshot_20261019_205256), termasuk kartu besar Pengalaman Mendengarkan Anda, baris list Downloads & Local Music, karosel kotak besar Playlist (Playlist baru, Impor dari Spotify, Musik yang Disukai dengan ikon jempol ungu-pink, serta playlist pengguna), Bottom Sheet 'New playlist' (Private/Unlisted/Public), serta seksi Artis dan Podcasts dari koleksi pengguna sendiri.",
+  "updatedAt": "2026-10-19T22:11:54.455969186Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
