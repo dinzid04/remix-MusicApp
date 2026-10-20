@@ -274,6 +274,84 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _customCoverOverrides = MutableStateFlow<Map<String, String>>(emptyMap())
     val customCoverOverrides: StateFlow<Map<String, String>> = _customCoverOverrides.asStateFlow()
 
+    private val _artistAvatarMap = MutableStateFlow<Map<String, String>>(loadSavedArtistAvatarMap())
+    val artistAvatarMap: StateFlow<Map<String, String>> = _artistAvatarMap.asStateFlow()
+    private val pendingAvatarResolutions = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun loadSavedArtistAvatarMap(): Map<String, String> {
+        val raw = prefs.getString("cached_artist_avatars_v2", null) ?: return emptyMap()
+        return try {
+            val obj = org.json.JSONObject(raw)
+            val result = mutableMapOf<String, String>()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val v = obj.optString(k).trim()
+                if (k.isNotBlank() && v.isNotBlank() && !v.contains("FRX282637095.webp")) {
+                    result[k.lowercase()] = v
+                }
+            }
+            result
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    private fun saveArtistAvatarToCache(artistName: String, avatarUrl: String) {
+        val cleanKey = MusicItem.sanitizeArtistName(artistName, isCollection = false)
+            .substringBefore(",")
+            .substringBefore("&")
+            .trim()
+            .lowercase()
+        val cleanUrl = avatarUrl.trim()
+        if (cleanKey.isBlank() || cleanUrl.isBlank() || cleanUrl.contains("FRX282637095.webp")) return
+        val existing = _artistAvatarMap.value[cleanKey]
+        if (existing == cleanUrl) return
+
+        val updated = _artistAvatarMap.value + (cleanKey to cleanUrl)
+        _artistAvatarMap.value = updated
+        try {
+            val json = org.json.JSONObject()
+            updated.forEach { (k, v) -> json.put(k, v) }
+            prefs.edit().putString("cached_artist_avatars_v2", json.toString()).apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun resolveArtistAvatarIfNeeded(artistName: String, browseId: String? = null) {
+        val cleanName = MusicItem.sanitizeArtistName(artistName, isCollection = false)
+            .substringBefore(",")
+            .substringBefore("&")
+            .trim()
+        if (cleanName.isBlank() || cleanName.equals("Artis", ignoreCase = true) || cleanName.equals("user", ignoreCase = true)) return
+        val key = cleanName.lowercase()
+        val existing = _artistAvatarMap.value[key]
+        if (!existing.isNullOrBlank() && (existing.contains("googleusercontent.com") || existing.contains("ggpht.com"))) {
+            return
+        }
+        if (!pendingAvatarResolutions.add(key)) return
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val resolved = repository.resolveArtistAvatar(cleanName, browseId)
+                if (!resolved.isNullOrBlank()) {
+                    saveArtistAvatarToCache(cleanName, resolved)
+                    // Also update subscribed artist in Room if subscribed
+                    val matchingSub = subscribedArtists.value.firstOrNull {
+                        it.name.equals(cleanName, ignoreCase = true) ||
+                            (!browseId.isNullOrBlank() && it.browseId.equals(browseId, ignoreCase = true))
+                    }
+                    if (matchingSub != null && matchingSub.avatarUrl != resolved) {
+                        repository.upsertSubscribedArtist(matchingSub.copy(avatarUrl = resolved))
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                pendingAvatarResolutions.remove(key)
+            }
+        }
+    }
+
     private val _selectedTab = MutableStateFlow(0)
     val selectedTab: StateFlow<Int> = _selectedTab.asStateFlow()
 
@@ -673,6 +751,45 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         _uiMessage.value = "${detail.tracks.size} lagu dari \"${detail.title}\" ditambahkan ke antrean"
     }
 
+    fun playTrackNext(track: MusicItem) {
+        playerController.playNextInQueue(
+            tracks = listOf(track),
+            sourceLabel = playerController.playerState.value.playingFromSource,
+            resolveStream = { t -> repository.resolveAudioStream(t) },
+            onTrackStarted = { startedTrack -> enrichTrackPlaybackContext(startedTrack) }
+        )
+        _uiMessage.value = "\"${track.title}\" will play next"
+    }
+
+    fun addTrackToQueue(track: MusicItem) {
+        playerController.addToQueue(
+            tracks = listOf(track),
+            sourceLabel = playerController.playerState.value.playingFromSource,
+            resolveStream = { t -> repository.resolveAudioStream(t) },
+            onTrackStarted = { startedTrack -> enrichTrackPlaybackContext(startedTrack) }
+        )
+        _uiMessage.value = "\"${track.title}\" added to queue"
+    }
+
+    fun setSleepTimerMinutes(minutes: Int, label: String = "${minutes}m") {
+        playerController.setSleepTimerMinutes(minutes, label)
+        _uiMessage.value = "Sleep timer set for $label"
+    }
+
+    fun setSleepTimerEndOfTrack() {
+        playerController.setSleepTimerEndOfTrack()
+        _uiMessage.value = "Sleep timer set for end of track"
+    }
+
+    fun cancelSleepTimer() {
+        val wasActive = playerController.playerState.value.sleepTimerLabel != null ||
+            playerController.playerState.value.sleepTimerEndOfTrack
+        playerController.cancelSleepTimer()
+        if (wasActive) {
+            _uiMessage.value = "Sleep timer cancelled"
+        }
+    }
+
     fun addTrackToLibraryPlaylist(playlistId: String, track: MusicItem) {
         viewModelScope.launch {
             val target = libraryPlaylists.value.firstOrNull { it.id == playlistId }
@@ -924,6 +1041,23 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         artistLoadJob?.cancel()
         artistLoadJob = viewModelScope.launch {
             val detail = repository.fetchArtistProfile(seedItem)
+            if (detail.avatarUrl.isNotBlank()) {
+                saveArtistAvatarToCache(detail.name, detail.avatarUrl)
+                saveArtistAvatarToCache(rawName, detail.avatarUrl)
+                val matchingSub = subscribedArtists.value.firstOrNull {
+                    it.name.equals(detail.name, ignoreCase = true) ||
+                        it.name.equals(rawName, ignoreCase = true) ||
+                        it.browseId.equals(detail.browseId, ignoreCase = true)
+                }
+                if (matchingSub != null && matchingSub.avatarUrl != detail.avatarUrl) {
+                    repository.upsertSubscribedArtist(matchingSub.copy(avatarUrl = detail.avatarUrl))
+                }
+            }
+            detail.relatedArtists.forEach { rel ->
+                if (rel.thumbnailUrl.isNotBlank()) {
+                    saveArtistAvatarToCache(rel.title, rel.thumbnailUrl)
+                }
+            }
             _artistScreenState.update {
                 it.copy(
                     isLoading = false,
@@ -939,10 +1073,16 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
             .substringBefore("&")
             .trim()
             .ifBlank { artistName }
-        val effectiveThumb = thumbnailUrl.ifBlank {
-            subscribedArtists.value.firstOrNull { it.name.equals(cleanName, ignoreCase = true) }?.avatarUrl
-                ?: CuratedHomeFallback.getArtistAvatarForName(cleanName)
-        }
+        val key = cleanName.lowercase()
+        val cachedAvatar = _artistAvatarMap.value[key]
+        val subAvatar = subscribedArtists.value
+            .firstOrNull { it.name.equals(cleanName, ignoreCase = true) }
+            ?.avatarUrl
+            ?.takeIf { it.isNotBlank() && !it.contains("FRX282637095.webp") }
+        val effectiveThumb = cachedAvatar
+            ?: subAvatar
+            ?: thumbnailUrl.takeIf { it.isNotBlank() && !it.contains("FRX282637095.webp") }
+            ?: CuratedHomeFallback.getArtistAvatarForName(cleanName)
         val seed = MusicItem(
             id = "artist_${cleanName.lowercase()}",
             title = cleanName,
@@ -993,9 +1133,14 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 _uiMessage.value = "Berhenti subscribe $artistName (dihapus dari Library)"
             } else {
-                val realAvatar = currentProfile?.avatarUrl?.takeIf { it.isNotBlank() }
+                val cachedPortrait = _artistAvatarMap.value[artistName.trim().lowercase()]
+                val realAvatar = cachedPortrait
+                    ?: currentProfile?.avatarUrl?.takeIf { it.isNotBlank() }
                     ?: currentProfile?.headerImageUrl?.takeIf { it.isNotBlank() }
                     ?: CuratedHomeFallback.getArtistAvatarForName(artistName)
+                if (realAvatar.isNotBlank()) {
+                    saveArtistAvatarToCache(artistName, realAvatar)
+                }
                 val item = SubscribedArtistItem(
                     id = browseId,
                     browseId = browseId,
@@ -1004,6 +1149,7 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                     subscribersText = currentProfile?.subscribersText ?: "Artis"
                 )
                 repository.upsertSubscribedArtist(item)
+                resolveArtistAvatarIfNeeded(artistName, browseId)
                 _artistScreenState.update { state ->
                     state.copy(
                         followedArtistIds = state.followedArtistIds + setOf(browseId, artistName, "UC_${artistName.lowercase()}")
@@ -1619,6 +1765,7 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         trackEnrichmentJob = viewModelScope.launch {
             launch {
                 repository.recordPlayedTrack(item)
+                resolveArtistAvatarIfNeeded(item.cleanArtist, item.browseId)
             }
 
             val lyricsDeferred = async { repository.getTrackLyrics(item, preferredProvider = preferred) }

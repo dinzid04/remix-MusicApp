@@ -262,14 +262,32 @@ class MusicRepository(
         return CuratedHomeFallback.getQuickPicksFallback()
     }
 
+    private fun ensureTracksHaveThumbnails(tracks: List<MusicItem>, fallbackCover: String): List<MusicItem> {
+        return tracks.map { t ->
+            val upgraded = MusicItem.upgradeThumbnailUrl(t.thumbnailUrl, t.videoId, MusicItem.Quality.HIGH)
+            val validThumb = when {
+                upgraded.isNotBlank() -> upgraded
+                !t.videoId.isNullOrBlank() && !t.videoId.startsWith("UC") && !t.videoId.startsWith("VL") && !t.videoId.startsWith("MPRE") ->
+                    "https://i.ytimg.com/vi/${t.videoId}/hqdefault.jpg"
+                else -> fallbackCover
+            }
+            if (validThumb != t.thumbnailUrl && validThumb.isNotBlank()) {
+                t.copy(thumbnailUrl = validThumb)
+            } else {
+                t
+            }
+        }
+    }
+
     suspend fun fetchPlaylistOrAlbumDetail(item: MusicItem): PlaylistDetail {
         val targetId = item.browseId?.takeIf { it.isNotBlank() } ?: item.id
         val localTracks = recentTrackDao.getTracksForPlaylist(targetId).map { it.toMusicItem() }
         if (localTracks.isNotEmpty() || targetId.startsWith("custom_pl_")) {
-            val effectiveTracks = localTracks.ifEmpty { item.previewTracks }
+            val rawEffectiveTracks = localTracks.ifEmpty { item.previewTracks }
             val cover = item.ultraResThumbnail.ifBlank {
-                effectiveTracks.firstOrNull()?.ultraResThumbnail.orEmpty()
+                rawEffectiveTracks.firstOrNull()?.ultraResThumbnail.orEmpty()
             }
+            val effectiveTracks = ensureTracksHaveThumbnails(rawEffectiveTracks, cover)
             return PlaylistDetail(
                 browseId = targetId,
                 title = item.title,
@@ -288,29 +306,43 @@ class MusicRepository(
                 item.id.startsWith("artist_radio_")
             )
         ) {
+            val cover = item.ultraResThumbnail.ifBlank {
+                item.previewTracks.firstOrNull()?.ultraResThumbnail.orEmpty()
+            }
+            val enrichedPreview = ensureTracksHaveThumbnails(item.previewTracks, cover)
             return CuratedHomeFallback.getPlaylistFallback(item).copy(
                 title = item.title,
                 authorSubtitle = item.subtitle.ifBlank { "user" },
-                metaSubtitle = "PLAYLIST • ${item.previewTracks.size} TRACKS",
-                thumbnailUrl = item.ultraResThumbnail.ifBlank {
-                    item.previewTracks.firstOrNull()?.ultraResThumbnail.orEmpty()
-                },
-                totalTracks = item.previewTracks.size,
-                tracks = item.previewTracks
+                metaSubtitle = "PLAYLIST • ${enrichedPreview.size} TRACKS",
+                thumbnailUrl = cover,
+                totalTracks = enrichedPreview.size,
+                tracks = enrichedPreview
             )
         }
         return try {
             val detail = scraper.getPlaylistOrAlbumDetail(item, hl = "id", gl = "ID")
+            val baseCover = detail.thumbnailUrl.ifBlank { item.ultraResThumbnail }
             if (detail.tracks.isEmpty() && item.previewTracks.isNotEmpty()) {
+                val enriched = ensureTracksHaveThumbnails(item.previewTracks, baseCover)
                 detail.copy(
-                    tracks = item.previewTracks,
-                    totalTracks = item.previewTracks.size
+                    thumbnailUrl = baseCover,
+                    tracks = enriched,
+                    totalTracks = enriched.size
                 )
             } else {
-                detail
+                val enriched = ensureTracksHaveThumbnails(detail.tracks, baseCover)
+                detail.copy(
+                    thumbnailUrl = baseCover.ifBlank { enriched.firstOrNull()?.highResThumbnail.orEmpty() },
+                    tracks = enriched
+                )
             }
         } catch (_: Exception) {
-            CuratedHomeFallback.getPlaylistFallback(item)
+            val fb = CuratedHomeFallback.getPlaylistFallback(item)
+            val baseCover = fb.thumbnailUrl.ifBlank { item.ultraResThumbnail }
+            fb.copy(
+                thumbnailUrl = baseCover,
+                tracks = ensureTracksHaveThumbnails(fb.tracks, baseCover)
+            )
         }
     }
 
@@ -325,6 +357,10 @@ class MusicRepository(
         } catch (_: Exception) {
             CuratedHomeFallback.getArtistProfileFallback(rawName, seedItem)
         }
+    }
+
+    suspend fun resolveArtistAvatar(artistName: String, browseId: String? = null): String? {
+        return scraper.fetchArtistAvatarUrl(artistName, browseId)
     }
 
     suspend fun connectSpotifyAndImport(

@@ -1077,11 +1077,18 @@ private fun ArtistVideosSection(
         ) {
             items(videos, key = { "vid_${it.id}" }) { video ->
                 val rawVidId = (video.videoId ?: video.id).removePrefix("vid_")
-                val effectiveThumb = when {
+                val backupThumb = remember(rawVidId, fallbackArtistImage) {
+                    if (rawVidId.length == 11) "https://i.ytimg.com/vi/$rawVidId/mqdefault.jpg"
+                    else fallbackArtistImage
+                }
+                val primaryThumb = when {
                     video.thumbnailUrl.isNotBlank() -> video.highResThumbnail
                     rawVidId.length == 11 -> "https://i.ytimg.com/vi/$rawVidId/hqdefault.jpg"
                     else -> fallbackArtistImage
                 }
+                var useBackup by remember(primaryThumb) { androidx.compose.runtime.mutableStateOf(false) }
+                val effectiveThumb = if (useBackup && backupThumb.isNotBlank()) backupThumb else primaryThumb
+
                 Column(
                     modifier = Modifier
                         .width(236.dp)
@@ -1105,6 +1112,11 @@ private fun ArtistVideosSection(
                             model = effectiveThumb,
                             contentDescription = video.title,
                             contentScale = ContentScale.Crop,
+                            onError = {
+                                if (!useBackup && backupThumb.isNotBlank() && backupThumb != primaryThumb) {
+                                    useBackup = true
+                                }
+                            },
                             modifier = Modifier.fillMaxSize()
                         )
                         Box(
@@ -1303,6 +1315,15 @@ private fun FansMightAlsoLikeCircularSection(
             horizontalArrangement = Arrangement.spacedBy(18.dp)
         ) {
             items(relatedArtists, key = { "rel_artist_${it.id}_${it.title}" }) { artistItem ->
+                val backupAvatar = remember(artistItem.title) {
+                    com.example.data.remote.CuratedHomeFallback.getArtistAvatarForName(artistItem.title)
+                }
+                val primaryAvatar = remember(artistItem.thumbnailUrl, backupAvatar) {
+                    artistItem.highResThumbnail.ifBlank { backupAvatar }
+                }
+                var useBackupAvatar by remember(primaryAvatar) { androidx.compose.runtime.mutableStateOf(false) }
+                val activeAvatar = if (useBackupAvatar && backupAvatar.isNotBlank()) backupAvatar else primaryAvatar
+
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
@@ -1321,9 +1342,14 @@ private fun FansMightAlsoLikeCircularSection(
                         contentAlignment = Alignment.Center
                     ) {
                         AsyncImage(
-                            model = artistItem.highResThumbnail,
+                            model = activeAvatar,
                             contentDescription = artistItem.title,
                             contentScale = ContentScale.Crop,
+                            onError = {
+                                if (!useBackupAvatar && backupAvatar.isNotBlank() && backupAvatar != primaryAvatar) {
+                                    useBackupAvatar = true
+                                }
+                            },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .clip(CircleShape)

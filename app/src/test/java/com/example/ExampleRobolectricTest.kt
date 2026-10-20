@@ -68,4 +68,36 @@ class ExampleRobolectricTest {
         assertTrue((lyrics?.syncedLines?.size ?: 0) > 10)
         assertEquals("Hari-hari berulang", lyrics?.syncedLines?.firstOrNull()?.text)
     }
+
+    @Test
+    fun thumbnailUpgrade_andSleepTimer_andQueueActions_workCorrectly() {
+        // 1. Verify i.ytimg.com URL is never corrupted into hqhqdefault.jpg
+        val ytUrl = "https://i.ytimg.com/vi/5F28ye50-Kc/hqdefault.jpg?sqp=-oaymwEcCNACELwBSFXyq4qpAw4IARUAAIhCGAFwAcABBg=="
+        val upgradedYt = MusicItem.upgradeThumbnailUrl(ytUrl, "5F28ye50-Kc", MusicItem.Quality.HIGH)
+        assertEquals("https://i.ytimg.com/vi/5F28ye50-Kc/hqdefault.jpg", upgradedYt)
+        assertFalse(upgradedYt.contains("hqhqdefault"))
+
+        // 2. Verify blank thumbnail with valid videoId falls back to i.ytimg.com/vi/{id}/hqdefault.jpg
+        val fallbackFromVid = MusicItem.upgradeThumbnailUrl("", "7PCkvCPvDXk", MusicItem.Quality.HIGH)
+        assertEquals("https://i.ytimg.com/vi/7PCkvCPvDXk/hqdefault.jpg", fallbackFromVid)
+
+        // 3. Verify yt3.ggpht.com artist portrait URL preserves exact signed path
+        val yt3Avatar = "https://yt3.ggpht.com/ytc/AIdro_k12345=w544-h544-p-l90-rj"
+        assertEquals(yt3Avatar, MusicItem.upgradeThumbnailUrl(yt3Avatar, null, MusicItem.Quality.HIGH))
+
+        // 4. Verify Sleep Timer state transitions in AudioPlayerController
+        val controller = com.example.player.AudioPlayerController()
+        controller.setSleepTimerMinutes(15, "15m")
+        assertEquals("15m", controller.playerState.value.sleepTimerLabel)
+        assertFalse(controller.playerState.value.sleepTimerEndOfTrack)
+
+        controller.setSleepTimerEndOfTrack()
+        assertEquals("End of track", controller.playerState.value.sleepTimerLabel)
+        assertTrue(controller.playerState.value.sleepTimerEndOfTrack)
+
+        controller.cancelSleepTimer()
+        assertEquals(null, controller.playerState.value.sleepTimerLabel)
+        assertFalse(controller.playerState.value.sleepTimerEndOfTrack)
+    }
 }
+

@@ -40,7 +40,10 @@ data class PlayerUiState(
     val streamFormat: String = "m4a (aac)",
     val queue: List<MusicItem> = emptyList(),
     val autoPlayQueue: List<MusicItem> = emptyList(),
-    val currentIndex: Int = 0
+    val currentIndex: Int = 0,
+    val sleepTimerLabel: String? = null,
+    val sleepTimerRemainingSec: Int = 0,
+    val sleepTimerEndOfTrack: Boolean = false
 ) {
     val hasNext: Boolean
         get() = queue.size > 1 || (isAutoPlayEnabled && autoPlayQueue.isNotEmpty())
@@ -84,6 +87,7 @@ class AudioPlayerController(
     private var mediaPlayer: MediaPlayer? = null
     private var progressJob: Job? = null
     private var virtualPlaybackJob: Job? = null
+    private var sleepTimerJob: Job? = null
     private var currentStreamResolver: (suspend (MusicItem) -> AudioStreamInfo?)? = null
     private var currentTrackPlayedCallback: ((MusicItem) -> Unit)? = null
     private var toggleFavoriteCallback: ((MusicItem) -> Unit)? = null
@@ -491,7 +495,21 @@ class AudioPlayerController(
                 setOnCompletionListener {
                     progressJob?.cancel()
                     val st = _playerState.value
-                    if (st.hasNext || st.isRepeatEnabled) {
+                    if (st.sleepTimerEndOfTrack) {
+                        _playerState.update {
+                            it.copy(
+                                isPlaying = false,
+                                progressFraction = 1f,
+                                currentPositionSec = it.durationSec,
+                                currentPositionMs = it.durationSec * 1000L,
+                                exactPositionSec = it.durationSec.toDouble(),
+                                sleepTimerEndOfTrack = false,
+                                sleepTimerLabel = null,
+                                sleepTimerRemainingSec = 0
+                            )
+                        }
+                        notifyPlaybackService()
+                    } else if (st.hasNext || st.isRepeatEnabled) {
                         playNext()
                     } else {
                         _playerState.update {
@@ -591,7 +609,21 @@ class AudioPlayerController(
                     val nextSec = (internalMs / 1000L).toInt()
                     val durMs = st.durationSec.coerceAtLeast(1) * 1000L
                     if (internalMs >= durMs) {
-                        if (st.hasNext || st.isRepeatEnabled) {
+                        if (st.sleepTimerEndOfTrack) {
+                            _playerState.update {
+                                it.copy(
+                                    isPlaying = false,
+                                    currentPositionSec = st.durationSec,
+                                    currentPositionMs = durMs,
+                                    exactPositionSec = st.durationSec.toDouble(),
+                                    progressFraction = 1f,
+                                    sleepTimerEndOfTrack = false,
+                                    sleepTimerLabel = null,
+                                    sleepTimerRemainingSec = 0
+                                )
+                            }
+                            notifyPlaybackService()
+                        } else if (st.hasNext || st.isRepeatEnabled) {
                             playNext()
                         } else {
                             _playerState.update {
@@ -648,6 +680,86 @@ class AudioPlayerController(
 
         _playerState.update { it.copy(isPlaying = !it.isPlaying) }
         notifyPlaybackService()
+    }
+
+    fun pausePlayback() {
+        val st = _playerState.value
+        if (!st.isPlaying) return
+        try {
+            mediaPlayer?.let { mp ->
+                if (mp.isPlaying) mp.pause()
+            }
+        } catch (_: Exception) {
+        }
+        _playerState.update { it.copy(isPlaying = false) }
+        notifyPlaybackService()
+    }
+
+    fun setSleepTimerMinutes(minutes: Int, label: String = "${minutes}m") {
+        sleepTimerJob?.cancel()
+        val totalSeconds = (minutes * 60).coerceAtLeast(1)
+        _playerState.update {
+            it.copy(
+                sleepTimerLabel = label,
+                sleepTimerRemainingSec = totalSeconds,
+                sleepTimerEndOfTrack = false
+            )
+        }
+        sleepTimerJob = scope.launch(Dispatchers.Main) {
+            var remaining = totalSeconds
+            while (isActive && remaining > 0) {
+                delay(1000L)
+                remaining -= 1
+                val formattedLabel = if (remaining >= 3600) {
+                    val h = remaining / 3600
+                    val m = (remaining % 3600) / 60
+                    if (m > 0) "${h}h ${m}m" else "${h}h"
+                } else if (remaining >= 60) {
+                    val m = (remaining + 59) / 60
+                    "${m}m"
+                } else {
+                    "${remaining}s"
+                }
+                _playerState.update {
+                    it.copy(
+                        sleepTimerRemainingSec = remaining,
+                        sleepTimerLabel = formattedLabel
+                    )
+                }
+            }
+            if (remaining <= 0) {
+                pausePlayback()
+                _playerState.update {
+                    it.copy(
+                        sleepTimerLabel = null,
+                        sleepTimerRemainingSec = 0,
+                        sleepTimerEndOfTrack = false
+                    )
+                }
+            }
+        }
+    }
+
+    fun setSleepTimerEndOfTrack() {
+        sleepTimerJob?.cancel()
+        _playerState.update {
+            it.copy(
+                sleepTimerLabel = "End of track",
+                sleepTimerRemainingSec = 0,
+                sleepTimerEndOfTrack = true
+            )
+        }
+    }
+
+    fun cancelSleepTimer() {
+        sleepTimerJob?.cancel()
+        _playerState.update {
+            it.copy(
+                sleepTimerLabel = null,
+                sleepTimerRemainingSec = 0,
+                sleepTimerEndOfTrack = false
+            )
+        }
     }
 
     fun seekToFraction(fraction: Float) {

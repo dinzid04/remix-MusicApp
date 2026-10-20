@@ -942,11 +942,28 @@ object CuratedHomeFallback {
         )
     }
 
+    private val FALLBACK_ARTIST_THUMBS = listOf(
+        "https://i.ytimg.com/vi/kOkQ4T5WO9E/hqdefault.jpg",
+        "https://i.ytimg.com/vi/60ItHLz5WEA/hqdefault.jpg",
+        "https://i.ytimg.com/vi/fRh_vgS2dFE/hqdefault.jpg",
+        "https://i.ytimg.com/vi/nfWlot6h_JM/hqdefault.jpg",
+        "https://i.ytimg.com/vi/5F28ye50-Kc/hqdefault.jpg",
+        "https://i.ytimg.com/vi/hT_nvWreIhg/hqdefault.jpg",
+        "https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg",
+        "https://i.ytimg.com/vi/bo_efYhYU2A/hqdefault.jpg",
+        "https://i.ytimg.com/vi/YQHsXMglC9A/hqdefault.jpg",
+        "https://i.ytimg.com/vi/RgKAFK5djSk/hqdefault.jpg",
+        "https://i.ytimg.com/vi/SlPhMPnQ58k/hqdefault.jpg",
+        "https://i.ytimg.com/vi/OPf0YbXqDm0/hqdefault.jpg"
+    )
+
     fun getArtistAvatarForName(artistName: String, fallbackUrl: String = ""): String {
         val low = artistName.trim().lowercase()
+        val cleanFallback = fallbackUrl.trim().takeIf {
+            it.isNotBlank() && !it.contains("FRX282637095.webp")
+        }.orEmpty()
+        if (cleanFallback.isNotBlank()) return cleanFallback
         return when {
-            low.contains("tulus") -> "https://lrc.red/s/FRX282637095.webp"
-            low.contains("rossa") -> "https://lrc.red/s/IDA170321018.webp"
             low.contains("nadin") -> "https://i.ytimg.com/vi/kOkQ4T5WO9E/hqdefault.jpg"
             low.contains("bernadya") -> "https://i.ytimg.com/vi/60ItHLz5WEA/hqdefault.jpg"
             low.contains("mahalini") -> "https://i.ytimg.com/vi/fRh_vgS2dFE/hqdefault.jpg"
@@ -957,8 +974,10 @@ object CuratedHomeFallback {
             low.contains("hindia") -> "https://i.ytimg.com/vi/bo_efYhYU2A/hqdefault.jpg"
             low.contains("budi doremi") -> "https://i.ytimg.com/vi/YQHsXMglC9A/hqdefault.jpg"
             low.contains("juicy luicy") -> "https://i.ytimg.com/vi/RgKAFK5djSk/hqdefault.jpg"
-            fallbackUrl.isNotBlank() -> fallbackUrl
-            else -> "https://lrc.red/s/FRX282637095.webp"
+            else -> {
+                val idx = (low.hashCode() and Int.MAX_VALUE) % FALLBACK_ARTIST_THUMBS.size
+                FALLBACK_ARTIST_THUMBS[idx]
+            }
         }
     }
 

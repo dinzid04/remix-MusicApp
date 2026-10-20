@@ -104,34 +104,44 @@ data class MusicItem(
             return candidate.ifBlank { "Artis" }
         }
 
+        private val YT_VI_ID_REGEX = Regex("ytimg\\.com/(?:vi|vi_webp)/([^/?#&]+)")
+
         fun upgradeThumbnailUrl(
             url: String?,
             videoId: String? = null,
             quality: Quality = Quality.HIGH
         ): String {
-            val clean = url?.trim().orEmpty()
+            val raw = url?.trim().orEmpty()
+            val clean = if (raw.startsWith("//")) "https:$raw" else raw
+            val validVideoId = videoId?.trim()?.takeIf {
+                it.isNotBlank() &&
+                    !it.startsWith("UC") &&
+                    !it.startsWith("VL") &&
+                    !it.startsWith("PL") &&
+                    !it.startsWith("MPRE")
+            }
+
             if (clean.isNotBlank()) {
+                if (clean.contains("lh3.googleusercontent.com")) {
+                    return clean
+                        .replace("=w60-h60", "=w544-h544")
+                        .replace("=w120-h120", "=w544-h544")
+                }
                 if (clean.contains("googleusercontent.com") || clean.contains("ggpht.com")) {
-                    val sz = quality.googleSize
-                    return clean.replace(
-                        Regex("=w\\d+-h\\d+[^&\\s]*"),
-                        "=w$sz-h$sz-l90-rj"
-                    ).replace(
-                        Regex("=s\\d+[^&\\s]*"),
-                        "=s$sz"
-                    )
+                    return clean
                 }
                 if (clean.contains("ytimg.com")) {
+                    val matchedVid = YT_VI_ID_REGEX.find(clean)?.groupValues?.getOrNull(1)
+                        ?: validVideoId
+                    if (!matchedVid.isNullOrBlank()) {
+                        return "https://i.ytimg.com/vi/$matchedVid/${quality.ytFile}"
+                    }
                     return clean
-                        .replace("default.jpg", quality.ytFile)
-                        .replace("mqdefault.jpg", quality.ytFile)
-                        .replace("sddefault.jpg", quality.ytFile)
-                        .replace("hqdefault.jpg", quality.ytFile)
                 }
                 return clean
             }
-            if (!videoId.isNullOrBlank()) {
-                return "https://i.ytimg.com/vi/$videoId/${quality.ytFile}"
+            if (!validVideoId.isNullOrBlank()) {
+                return "https://i.ytimg.com/vi/$validVideoId/${quality.ytFile}"
             }
             return ""
         }

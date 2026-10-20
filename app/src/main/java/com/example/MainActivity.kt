@@ -145,6 +145,8 @@ fun BitChordApp(
     val isPlayingAudio by homeViewModel.isPlayingAudio.collectAsStateWithLifecycle()
     val favoriteIds by homeViewModel.favoriteIds.collectAsStateWithLifecycle()
     val favoriteTracks by homeViewModel.favoriteTracks.collectAsStateWithLifecycle()
+    val recentTracks by homeViewModel.recentTracks.collectAsStateWithLifecycle()
+    val artistAvatarMap by homeViewModel.artistAvatarMap.collectAsStateWithLifecycle()
     val libraryPlaylists by homeViewModel.libraryPlaylists.collectAsStateWithLifecycle()
     val subscribedArtists by homeViewModel.subscribedArtists.collectAsStateWithLifecycle()
     val savedPlaylistIds by homeViewModel.savedPlaylistIds.collectAsStateWithLifecycle()
@@ -241,6 +243,9 @@ fun BitChordApp(
                     favoriteTracks = favoriteTracks,
                     libraryPlaylists = libraryPlaylists,
                     subscribedArtists = subscribedArtists,
+                    recentTracks = recentTracks,
+                    artistAvatarMap = artistAvatarMap,
+                    onResolveArtistAvatar = homeViewModel::resolveArtistAvatarIfNeeded,
                     downloadedTracks = downloadedTracks,
                     localDeviceTracks = localDeviceTracks,
                     activeDownloads = activeDownloads,
@@ -632,6 +637,11 @@ fun BitChordApp(
                 onToggleAutoPlay = homeViewModel::onToggleAutoPlay,
                 onSelectQueueTrack = homeViewModel::onSelectTrackFromQueue,
                 onRemoveQueueTrack = homeViewModel::onRemoveTrackFromQueue,
+                onPlayNext = homeViewModel::playTrackNext,
+                onAddToQueue = homeViewModel::addTrackToQueue,
+                onSetSleepTimerMinutes = homeViewModel::setSleepTimerMinutes,
+                onSetSleepTimerEndOfTrack = homeViewModel::setSleepTimerEndOfTrack,
+                onCancelSleepTimer = homeViewModel::cancelSleepTimer,
                 onOpenArtistProfile = { artistName, thumbUrl ->
                     homeViewModel.openArtistProfileByName(artistName, thumbUrl)
                 }
@@ -698,6 +708,11 @@ private fun IsolatedFullMusicPlayerHost(
     onToggleAutoPlay: () -> Unit,
     onSelectQueueTrack: (MusicItem) -> Unit,
     onRemoveQueueTrack: (MusicItem) -> Unit,
+    onPlayNext: (MusicItem) -> Unit,
+    onAddToQueue: (MusicItem) -> Unit,
+    onSetSleepTimerMinutes: (Int, String) -> Unit,
+    onSetSleepTimerEndOfTrack: () -> Unit,
+    onCancelSleepTimer: () -> Unit,
     onOpenArtistProfile: (String, String) -> Unit
 ) {
     val playerState by playerStateFlow.collectAsStateWithLifecycle()
@@ -742,6 +757,11 @@ private fun IsolatedFullMusicPlayerHost(
         onToggleAutoPlay = onToggleAutoPlay,
         onSelectQueueTrack = onSelectQueueTrack,
         onRemoveQueueTrack = onRemoveQueueTrack,
+        onPlayNext = onPlayNext,
+        onAddToQueue = onAddToQueue,
+        onSetSleepTimerMinutes = onSetSleepTimerMinutes,
+        onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
+        onCancelSleepTimer = onCancelSleepTimer,
         onOpenArtistProfile = onOpenArtistProfile
     )
 }

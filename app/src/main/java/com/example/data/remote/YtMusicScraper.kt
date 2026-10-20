@@ -98,6 +98,7 @@ class YtMusicScraper {
     private var cachedConfig: InnertubeConfig? = null
     private val configMutex = Mutex()
     private val resolvedVideoIdCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val artistAvatarCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     suspend fun resolveTrueVideoId(item: MusicItem): String? = withContext(Dispatchers.IO) {
         val rawId = item.videoId?.trim()
@@ -524,12 +525,27 @@ class YtMusicScraper {
 
                     if (trackTitle.isBlank()) continue
 
+                    val col0Runs = ir.optJSONArray("flexColumns")
+                        ?.optJSONObject(0)
+                        ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                        ?.optJSONObject("text")
+                        ?.optJSONArray("runs")
+
                     val videoId = ir.optJSONObject("playlistItemData")?.optString("videoId")?.takeIf { it.isNotBlank() }
                         ?: ir.optJSONObject("overlay")
                             ?.optJSONObject("musicItemThumbnailOverlayRenderer")
                             ?.optJSONObject("content")
                             ?.optJSONObject("musicPlayButtonRenderer")
                             ?.optJSONObject("playNavigationEndpoint")
+                            ?.optJSONObject("watchEndpoint")
+                            ?.optString("videoId")
+                            ?.takeIf { it.isNotBlank() }
+                        ?: ir.optJSONObject("navigationEndpoint")
+                            ?.optJSONObject("watchEndpoint")
+                            ?.optString("videoId")
+                            ?.takeIf { it.isNotBlank() }
+                        ?: col0Runs?.optJSONObject(0)
+                            ?.optJSONObject("navigationEndpoint")
                             ?.optJSONObject("watchEndpoint")
                             ?.optString("videoId")
                             ?.takeIf { it.isNotBlank() }
@@ -569,19 +585,22 @@ class YtMusicScraper {
                         ?.optString("text")
                         ?.takeIf { it.isNotBlank() }
 
-                    val itThumbs = ir.optJSONObject("thumbnail")
-                        ?.optJSONObject("musicThumbnailRenderer")
-                        ?.optJSONObject("thumbnail")
-                        ?.optJSONArray("thumbnails")
-
-                    val trackThumb = extractLastThumbnailUrl(itThumbs) ?: rawHeaderThumb ?: seedItem.thumbnailUrl
+                    val rawTrackThumb = extractBestThumbnailUrl(ir)
+                    val upgradedTrackThumb = MusicItem.upgradeThumbnailUrl(rawTrackThumb, videoId, MusicItem.Quality.HIGH)
+                        .ifBlank {
+                            if (!videoId.isNullOrBlank()) {
+                                "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+                            } else {
+                                MusicItem.upgradeThumbnailUrl(rawHeaderThumb ?: seedItem.thumbnailUrl, null, MusicItem.Quality.HIGH)
+                            }
+                        }
 
                     tracks.add(
                         MusicItem(
                             id = videoId ?: "${browseId}_track_$idx",
                             title = trackTitle,
                             subtitle = artistSubtitle,
-                            thumbnailUrl = MusicItem.upgradeThumbnailUrl(trackThumb, videoId, MusicItem.Quality.HIGH),
+                            thumbnailUrl = upgradedTrackThumb,
                             videoId = videoId,
                             browseId = browseId,
                             type = "song",
@@ -1456,6 +1475,10 @@ class YtMusicScraper {
                 ?.optJSONObject("watchEndpoint")
                 ?.optString("videoId")
                 ?.takeIf { it.isNotBlank() }
+            ?: ir.optJSONObject("navigationEndpoint")
+                ?.optJSONObject("watchEndpoint")
+                ?.optString("videoId")
+                ?.takeIf { it.isNotBlank() }
             ?: col0Runs?.optJSONObject(0)
                 ?.optJSONObject("navigationEndpoint")
                 ?.optJSONObject("watchEndpoint")
@@ -1472,12 +1495,7 @@ class YtMusicScraper {
                 ?.optString("browseId")
                 ?.takeIf { it.isNotBlank() }
 
-        val thumbs = ir.optJSONObject("thumbnail")
-            ?.optJSONObject("musicThumbnailRenderer")
-            ?.optJSONObject("thumbnail")
-            ?.optJSONArray("thumbnails")
-
-        val rawThumb = extractLastThumbnailUrl(thumbs)
+        val rawThumb = extractBestThumbnailUrl(ir)
         val firstCol1 = col1Runs?.optJSONObject(0)?.optString("text").orEmpty().lowercase()
         val lowHint = categoryHint?.lowercase().orEmpty()
 
@@ -1504,12 +1522,17 @@ class YtMusicScraper {
 
         val normalizedBrowseId = extractBrowseId(browseId)
         val effectiveId = videoId ?: normalizedBrowseId ?: "${title}_${displaySubtitle}"
+        val finalThumb = MusicItem.upgradeThumbnailUrl(rawThumb, videoId)
+
+        if (itemType == "artist" && finalThumb.isNotBlank()) {
+            artistAvatarCache[title.trim().lowercase()] = finalThumb
+        }
 
         return MusicItem(
             id = effectiveId,
             title = title,
             subtitle = displaySubtitle,
-            thumbnailUrl = MusicItem.upgradeThumbnailUrl(rawThumb, videoId),
+            thumbnailUrl = finalThumb,
             videoId = videoId,
             browseId = normalizedBrowseId,
             type = itemType,
@@ -1752,7 +1775,111 @@ class YtMusicScraper {
 
     private fun extractLastThumbnailUrl(thumbnails: JSONArray?): String? {
         if (thumbnails == null || thumbnails.length() == 0) return null
-        return thumbnails.optJSONObject(thumbnails.length() - 1)?.optString("url")?.takeIf { it.isNotBlank() }
+        for (idx in thumbnails.length() - 1 downTo 0) {
+            val raw = thumbnails.optJSONObject(idx)?.optString("url")?.trim().orEmpty()
+            if (raw.isNotBlank()) {
+                return if (raw.startsWith("//")) "https:$raw" else raw
+            }
+        }
+        return null
+    }
+
+    /**
+     * Universal thumbnail extractor aligned with `extractThumbnail` in `ytm.mjs`.
+     * Inspects all possible nested InnerTube thumbnail renderer structures.
+     */
+    private fun extractBestThumbnailUrl(node: JSONObject?): String? {
+        if (node == null) return null
+        val candidates = listOfNotNull(
+            node.optJSONObject("thumbnail")
+                ?.optJSONObject("musicThumbnailRenderer")
+                ?.optJSONObject("thumbnail")
+                ?.optJSONArray("thumbnails"),
+            node.optJSONObject("thumbnailRenderer")
+                ?.optJSONObject("musicThumbnailRenderer")
+                ?.optJSONObject("thumbnail")
+                ?.optJSONArray("thumbnails"),
+            node.optJSONObject("thumbnail")
+                ?.optJSONObject("croppedSquareThumbnailRenderer")
+                ?.optJSONObject("thumbnail")
+                ?.optJSONArray("thumbnails"),
+            node.optJSONObject("thumbnailRenderer")
+                ?.optJSONObject("croppedSquareThumbnailRenderer")
+                ?.optJSONObject("thumbnail")
+                ?.optJSONArray("thumbnails"),
+            node.optJSONObject("foregroundThumbnail")
+                ?.optJSONObject("musicThumbnailRenderer")
+                ?.optJSONObject("thumbnail")
+                ?.optJSONArray("thumbnails"),
+            node.optJSONObject("thumbnail")?.optJSONArray("thumbnails"),
+            node.optJSONArray("thumbnails")
+        )
+        for (arr in candidates) {
+            val found = extractLastThumbnailUrl(arr)
+            if (!found.isNullOrBlank()) return found
+        }
+        return null
+    }
+
+    /**
+     * Resolves an artist's real circular profile photo from YouTube Music's `Artists` search filter
+     * (matching the exact image shown in the Artists category of Search and on the Artist Profile page).
+     */
+    suspend fun fetchArtistAvatarUrl(
+        artistName: String,
+        browseId: String? = null,
+        hl: String = "id",
+        gl: String = "ID"
+    ): String? = withContext(Dispatchers.IO) {
+        val cleanName = MusicItem.sanitizeArtistName(artistName, isCollection = false)
+            .substringBefore(",")
+            .substringBefore("&")
+            .trim()
+        if (cleanName.isBlank() || cleanName.equals("Artis", ignoreCase = true)) return@withContext null
+
+        val key = cleanName.lowercase()
+        artistAvatarCache[key]?.takeIf { it.isNotBlank() }?.let { return@withContext it }
+
+        try {
+            val results = searchByFilter(cleanName, filter = "artists", hl = hl, gl = gl)
+            val bestMatch = results.firstOrNull {
+                it.title.equals(cleanName, ignoreCase = true) && it.thumbnailUrl.isNotBlank()
+            } ?: results.firstOrNull { it.thumbnailUrl.isNotBlank() }
+
+            val resolvedUrl = bestMatch?.thumbnailUrl?.takeIf { it.isNotBlank() }
+            if (!resolvedUrl.isNullOrBlank()) {
+                artistAvatarCache[key] = resolvedUrl
+                return@withContext resolvedUrl
+            }
+        } catch (_: Exception) {
+        }
+
+        if (!browseId.isNullOrBlank() && browseId.startsWith("UC") && !browseId.startsWith("UC_")) {
+            try {
+                val browseRes = apiRequest("browse", payload = JSONObject().put("browseId", browseId), hl = hl, gl = gl)
+                val headerObj = browseRes.optJSONObject("header")?.optJSONObject("musicImmersiveHeaderRenderer")
+                    ?: browseRes.optJSONObject("header")?.optJSONObject("musicVisualHeaderRenderer")
+                val headerUrl = extractBestThumbnailUrl(headerObj)?.let {
+                    MusicItem.upgradeThumbnailUrl(it, null, MusicItem.Quality.HIGH)
+                }?.takeIf { it.isNotBlank() }
+                if (!headerUrl.isNullOrBlank()) {
+                    artistAvatarCache[key] = headerUrl
+                    return@withContext headerUrl
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        try {
+            val songs = searchByFilter(cleanName, filter = "songs", hl = hl, gl = gl)
+            val songThumb = songs.firstOrNull { it.thumbnailUrl.isNotBlank() }?.highResThumbnail
+            if (!songThumb.isNullOrBlank()) {
+                artistAvatarCache[key] = songThumb
+                return@withContext songThumb
+            }
+        } catch (_: Exception) {
+        }
+        null
     }
 
     /**
@@ -1818,16 +1945,19 @@ class YtMusicScraper {
                 it.title.equals(cleanArtistName, ignoreCase = true)
             } ?: searchedArtists.firstOrNull()
 
-            val resolvedBrowseId = seedItem.browseId?.takeIf { it.startsWith("UC") }
-                ?: primaryArtistMatch?.browseId?.takeIf { it.startsWith("UC") }
+            val resolvedBrowseId = seedItem.browseId?.takeIf { it.startsWith("UC") && !it.startsWith("UC_") }
+                ?: primaryArtistMatch?.browseId?.takeIf { it.startsWith("UC") && !it.startsWith("UC_") }
                 ?: "UC_${cleanArtistName.lowercase().replace(Regex("[^a-z0-9]+"), "_")}"
 
             var headerThumb: String? = null
             var subscribersText: String? = null
             var descriptionText: String? = null
+            val channelTopSongs = mutableListOf<MusicItem>()
             val channelRelatedArtists = mutableListOf<MusicItem>()
             val channelAlbums = mutableListOf<MusicItem>()
             val channelSingles = mutableListOf<MusicItem>()
+            val channelVideos = mutableListOf<MusicItem>()
+            val channelFeaturedPlaylists = mutableListOf<MusicItem>()
 
             if (resolvedBrowseId.startsWith("UC") && !resolvedBrowseId.startsWith("UC_")) {
                 try {
@@ -1836,16 +1966,7 @@ class YtMusicScraper {
                         ?: browseRes.optJSONObject("header")?.optJSONObject("musicVisualHeaderRenderer")
 
                     if (headerObj != null) {
-                        val hThumbs = headerObj.optJSONObject("thumbnail")
-                            ?.optJSONObject("musicThumbnailRenderer")
-                            ?.optJSONObject("thumbnail")
-                            ?.optJSONArray("thumbnails")
-                            ?: headerObj.optJSONObject("foregroundThumbnail")
-                                ?.optJSONObject("musicThumbnailRenderer")
-                                ?.optJSONObject("thumbnail")
-                                ?.optJSONArray("thumbnails")
-                        headerThumb = extractLastThumbnailUrl(hThumbs)
-
+                        headerThumb = extractBestThumbnailUrl(headerObj)
                         subscribersText = joinRunsText(
                             headerObj.optJSONObject("subscriptionButton")
                                 ?.optJSONObject("subscribeButtonRenderer")
@@ -1872,6 +1993,21 @@ class YtMusicScraper {
                                 descriptionText = joinRunsText(descShelf.optJSONObject("description")?.optJSONArray("runs"))
                             }
 
+                            val musicShelf = secObj.optJSONObject("musicShelfRenderer")
+                            if (musicShelf != null) {
+                                val shelfItems = musicShelf.optJSONArray("contents")
+                                if (shelfItems != null) {
+                                    for (j in 0 until shelfItems.length()) {
+                                        val itemObj = shelfItems.optJSONObject(j) ?: continue
+                                        parseResponsiveItem(itemObj, categoryHint = "songs")?.let { parsedSong ->
+                                            if (!parsedSong.videoId.isNullOrBlank()) {
+                                                channelTopSongs.add(parsedSong)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             val carousel = secObj.optJSONObject("musicCarouselShelfRenderer") ?: continue
                             val shelfTitle = joinRunsText(
                                 carousel.optJSONObject("header")
@@ -1882,7 +2018,14 @@ class YtMusicScraper {
 
                             val contentsArr = carousel.optJSONArray("contents") ?: continue
                             for (j in 0 until contentsArr.length()) {
-                                val twoRow = contentsArr.optJSONObject(j)?.optJSONObject("musicTwoRowItemRenderer") ?: continue
+                                val itemWrapper = contentsArr.optJSONObject(j) ?: continue
+                                val twoRow = itemWrapper.optJSONObject("musicTwoRowItemRenderer")
+                                if (twoRow == null) {
+                                    if (shelfTitle.contains("video")) {
+                                        parseResponsiveItem(itemWrapper, categoryHint = "videos")?.let { channelVideos.add(it) }
+                                    }
+                                    continue
+                                }
                                 val itemTitle = stripEmojis(joinRunsText(twoRow.optJSONObject("title")?.optJSONArray("runs")).orEmpty())
                                 if (itemTitle.isBlank()) continue
                                 val itemSub = stripEmojis(joinRunsText(twoRow.optJSONObject("subtitle")?.optJSONArray("runs")).orEmpty())
@@ -1890,20 +2033,53 @@ class YtMusicScraper {
                                     ?.optJSONObject("browseEndpoint")
                                     ?.optString("browseId")
                                     ?.takeIf { it.isNotBlank() }
-                                val itemThumbs = twoRow.optJSONObject("thumbnailRenderer")
-                                    ?.optJSONObject("musicThumbnailRenderer")
-                                    ?.optJSONObject("thumbnail")
-                                    ?.optJSONArray("thumbnails")
-                                val rawItemThumb = extractLastThumbnailUrl(itemThumbs)
+
+                                val overlayPlayEndpoint = twoRow.optJSONObject("thumbnailOverlay")
+                                    ?.optJSONObject("musicItemThumbnailOverlayRenderer")
+                                    ?.optJSONObject("content")
+                                    ?.optJSONObject("musicPlayButtonRenderer")
+                                    ?.optJSONObject("playNavigationEndpoint")
+
+                                val itemVideoId = twoRow.optJSONObject("navigationEndpoint")
+                                    ?.optJSONObject("watchEndpoint")
+                                    ?.optString("videoId")
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: overlayPlayEndpoint?.optJSONObject("watchEndpoint")?.optString("videoId")?.takeIf { it.isNotBlank() }
+
+                                val itemPlaylistId = twoRow.optJSONObject("navigationEndpoint")
+                                    ?.optJSONObject("watchPlaylistEndpoint")
+                                    ?.optString("playlistId")
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: overlayPlayEndpoint?.optJSONObject("watchPlaylistEndpoint")?.optString("playlistId")?.takeIf { it.isNotBlank() }
+
+                                val rawItemThumb = extractBestThumbnailUrl(twoRow)
+                                val upgradedThumb = MusicItem.upgradeThumbnailUrl(rawItemThumb, itemVideoId, MusicItem.Quality.HIGH)
 
                                 when {
-                                    shelfTitle.contains("penggemar") || shelfTitle.contains("fans") || shelfTitle.contains("mirip") || itemBrowseId?.startsWith("UC") == true -> {
+                                    shelfTitle.contains("video") || (!itemVideoId.isNullOrBlank() && itemBrowseId == null) -> {
+                                        val vid = itemVideoId ?: continue
+                                        val vidThumb = upgradedThumb.ifBlank { "https://i.ytimg.com/vi/$vid/hqdefault.jpg" }
+                                        channelVideos.add(
+                                            MusicItem(
+                                                id = vid,
+                                                title = itemTitle,
+                                                subtitle = itemSub.ifBlank { cleanArtistName },
+                                                thumbnailUrl = vidThumb,
+                                                videoId = vid,
+                                                type = "video"
+                                            )
+                                        )
+                                    }
+                                    shelfTitle.contains("penggemar") || shelfTitle.contains("fans") || shelfTitle.contains("mirip") || shelfTitle.contains("like") || itemBrowseId?.startsWith("UC") == true -> {
+                                        if (upgradedThumb.isNotBlank()) {
+                                            artistAvatarCache[itemTitle.trim().lowercase()] = upgradedThumb
+                                        }
                                         channelRelatedArtists.add(
                                             MusicItem(
                                                 id = itemBrowseId ?: "rel_${itemTitle.lowercase()}",
                                                 title = itemTitle,
                                                 subtitle = itemSub.ifBlank { "Artis" },
-                                                thumbnailUrl = MusicItem.upgradeThumbnailUrl(rawItemThumb, null, MusicItem.Quality.HIGH),
+                                                thumbnailUrl = upgradedThumb,
                                                 browseId = itemBrowseId,
                                                 type = "artist"
                                             )
@@ -1915,7 +2091,7 @@ class YtMusicScraper {
                                                 id = itemBrowseId ?: "single_${itemTitle.lowercase()}",
                                                 title = itemTitle,
                                                 subtitle = itemSub.ifBlank { "Single • $cleanArtistName" },
-                                                thumbnailUrl = MusicItem.upgradeThumbnailUrl(rawItemThumb, null, MusicItem.Quality.HIGH),
+                                                thumbnailUrl = upgradedThumb,
                                                 browseId = itemBrowseId,
                                                 type = "album"
                                             )
@@ -1927,9 +2103,23 @@ class YtMusicScraper {
                                                 id = itemBrowseId ?: "album_${itemTitle.lowercase()}",
                                                 title = itemTitle,
                                                 subtitle = itemSub.ifBlank { "Album • $cleanArtistName" },
-                                                thumbnailUrl = MusicItem.upgradeThumbnailUrl(rawItemThumb, null, MusicItem.Quality.HIGH),
+                                                thumbnailUrl = upgradedThumb,
                                                 browseId = itemBrowseId,
                                                 type = "album"
+                                            )
+                                        )
+                                    }
+                                    shelfTitle.contains("menampilkan") || shelfTitle.contains("featuring") || shelfTitle.contains("playlist") || itemBrowseId?.startsWith("VL") == true || !itemPlaylistId.isNullOrBlank() -> {
+                                        val normBrowse = extractBrowseId(itemBrowseId ?: itemPlaylistId)
+                                        channelFeaturedPlaylists.add(
+                                            MusicItem(
+                                                id = normBrowse ?: "feat_${itemTitle.lowercase()}",
+                                                title = itemTitle,
+                                                subtitle = itemSub.ifBlank { "Playlist • YouTube Music" },
+                                                thumbnailUrl = upgradedThumb,
+                                                browseId = normBrowse,
+                                                playlistId = itemPlaylistId,
+                                                type = "playlist"
                                             )
                                         )
                                     }
@@ -1943,8 +2133,8 @@ class YtMusicScraper {
 
             val fallbackProfile = CuratedHomeFallback.getArtistProfileFallback(cleanArtistName, seedItem)
 
-            val topSongs = songsDeferred.await()
-                .filter { !it.videoId.isNullOrBlank() }
+            val topSongs = (channelTopSongs + songsDeferred.await().filter { !it.videoId.isNullOrBlank() })
+                .distinctBy { it.videoId ?: it.id }
                 .take(15)
                 .ifEmpty { fallbackProfile.topSongs }
 
@@ -1959,41 +2149,56 @@ class YtMusicScraper {
             }).distinctBy { it.title.lowercase() }
                 .ifEmpty { fallbackProfile.singlesAndEps }
 
+            // Prioritize the circular artist avatar from Search ("artists") or browse header over any song cover
             val bestAvatar = MusicItem.upgradeThumbnailUrl(
-                headerThumb
-                    ?: primaryArtistMatch?.thumbnailUrl?.takeIf { it.isNotBlank() }
+                primaryArtistMatch?.thumbnailUrl?.takeIf { it.isNotBlank() }
+                    ?: headerThumb?.takeIf { it.isNotBlank() }
+                    ?: artistAvatarCache[cleanArtistName.lowercase()]
                     ?: seedItem.thumbnailUrl.takeIf { it.isNotBlank() }
                     ?: topSongs.firstOrNull()?.thumbnailUrl
                     ?: fallbackProfile.avatarUrl,
                 null,
                 MusicItem.Quality.ULTRA
             )
+            if (bestAvatar.isNotBlank()) {
+                artistAvatarCache[cleanArtistName.lowercase()] = bestAvatar
+                primaryArtistMatch?.title?.trim()?.lowercase()?.let { artistAvatarCache[it] = bestAvatar }
+            }
 
             // Guarantee every video item has a valid YouTube video thumbnail & videoId!
-            val rawVideos = videosDeferred.await().take(10).ifEmpty { fallbackProfile.videos }
-            val videos = rawVideos.mapIndexed { idx, v ->
-                val vid = v.videoId?.takeIf { it.isNotBlank() }
-                    ?: topSongs.getOrNull(idx % topSongs.size)?.videoId
+            val combinedRawVideos = (channelVideos + videosDeferred.await())
+                .distinctBy { (it.videoId ?: it.id).lowercase() }
+                .take(10)
+                .ifEmpty { fallbackProfile.videos }
+
+            val videos = combinedRawVideos.mapIndexed { idx, v ->
+                val vid = v.videoId?.takeIf {
+                    it.isNotBlank() && !it.startsWith("UC") && !it.startsWith("VL") && !it.startsWith("MPRE")
+                } ?: topSongs.getOrNull(idx % topSongs.size)?.videoId
                     ?: "7PCkvCPvDXk"
-                val guaranteedThumb = when {
-                    v.thumbnailUrl.isNotBlank() -> MusicItem.upgradeThumbnailUrl(v.thumbnailUrl, vid, MusicItem.Quality.HIGH)
-                    vid.isNotBlank() -> "https://i.ytimg.com/vi/$vid/hqdefault.jpg"
-                    else -> bestAvatar
-                }
+
+                val guaranteedThumb = MusicItem.upgradeThumbnailUrl(v.thumbnailUrl, vid, MusicItem.Quality.HIGH)
+                    .ifBlank { "https://i.ytimg.com/vi/$vid/hqdefault.jpg" }
+
                 v.copy(
+                    id = vid,
                     videoId = vid,
                     thumbnailUrl = guaranteedThumb,
                     type = "video"
                 )
             }
 
-            // Guarantee every featured playlist ("Menampilkan [Artis]") has previewTracks & valid browseId so clicking it ALWAYS opens PlaylistDetailScreen with songs!
-            val rawPlaylists = playlistsDeferred.await().take(10).ifEmpty { fallbackProfile.featuredPlaylists }
-            val featuredPlaylists = rawPlaylists.mapIndexed { idx, pl ->
+            // Guarantee every featured playlist ("Menampilkan [Artis]") has previewTracks & valid browseId
+            val combinedRawPlaylists = (channelFeaturedPlaylists + playlistsDeferred.await())
+                .distinctBy { (it.browseId ?: it.id).lowercase() }
+                .take(10)
+                .ifEmpty { fallbackProfile.featuredPlaylists }
+
+            val featuredPlaylists = combinedRawPlaylists.mapIndexed { idx, pl ->
                 val normBrowse = pl.browseId?.takeIf { it.isNotBlank() }?.let {
-                    if (it.startsWith("PL")) "VL$it" else it
+                    extractBrowseId(it) ?: it
                 } ?: pl.id.ifBlank { "feat_pl_${idx}_${cleanArtistName.lowercase()}" }
-                val plThumb = pl.thumbnailUrl.ifBlank {
+                val plThumb = MusicItem.upgradeThumbnailUrl(pl.thumbnailUrl, null, MusicItem.Quality.HIGH).ifBlank {
                     topSongs.getOrNull(idx % topSongs.size)?.highResThumbnail ?: bestAvatar
                 }
                 pl.copy(
@@ -2008,10 +2213,29 @@ class YtMusicScraper {
             val otherSearchedArtists = searchedArtists
                 .filterNot { it.title.equals(cleanArtistName, ignoreCase = true) }
 
-            val relatedArtists = (channelRelatedArtists + otherSearchedArtists + fallbackProfile.relatedArtists)
+            val rawRelatedArtists = (channelRelatedArtists + otherSearchedArtists + fallbackProfile.relatedArtists)
                 .filterNot { it.title.equals(cleanArtistName, ignoreCase = true) }
-                .distinctBy { it.title.lowercase() }
+                .distinctBy { it.title.trim().lowercase() }
                 .take(10)
+
+            // Ensure every related artist in "Penggemar mungkin juga suka" has a non-empty, valid profile image!
+            val relatedArtists = rawRelatedArtists.map { relArtist ->
+                async {
+                    val existingThumb = relArtist.thumbnailUrl.trim()
+                    if (existingThumb.isNotBlank()) {
+                        artistAvatarCache[relArtist.title.trim().lowercase()] = existingThumb
+                        relArtist
+                    } else {
+                        val fetchedAvatar = fetchArtistAvatarUrl(
+                            artistName = relArtist.title,
+                            browseId = relArtist.browseId,
+                            hl = hl,
+                            gl = gl
+                        ) ?: CuratedHomeFallback.getArtistAvatarForName(relArtist.title)
+                        relArtist.copy(thumbnailUrl = fetchedAvatar)
+                    }
+                }
+            }.awaitAll()
 
             val subLabel = subscribersText?.takeIf { it.isNotBlank() }
                 ?: primaryArtistMatch?.subtitle?.substringAfter("•", "")?.trim()?.takeIf { it.isNotBlank() }
@@ -2027,7 +2251,7 @@ class YtMusicScraper {
                 subscribersText = subLabel,
                 monthlyListenersText = fallbackProfile.monthlyListenersText,
                 description = descriptionText?.takeIf { it.isNotBlank() } ?: fallbackProfile.description,
-                headerImageUrl = bestAvatar,
+                headerImageUrl = headerThumb?.let { MusicItem.upgradeThumbnailUrl(it, null, MusicItem.Quality.ULTRA) }?.takeIf { it.isNotBlank() } ?: bestAvatar,
                 avatarUrl = bestAvatar,
                 latestRelease = latestRelease,
                 topSongs = topSongs,

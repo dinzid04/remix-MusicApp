@@ -133,6 +133,9 @@ fun LibraryScreen(
     activeDownloads: Map<String, ActiveDownloadProgress>,
     candidateTracksForAdd: List<MusicItem>,
     subscribedArtists: List<SubscribedArtistItem> = emptyList(),
+    recentTracks: List<MusicItem> = emptyList(),
+    artistAvatarMap: Map<String, String> = emptyMap(),
+    onResolveArtistAvatar: (String, String?) -> Unit = { _, _ -> },
     onUpdateUsername: (String) -> Unit = {},
     onOpenLikedSongs: () -> Unit,
     onOpenDownloads: () -> Unit,
@@ -160,54 +163,90 @@ fun LibraryScreen(
     val context = LocalContext.current
     val currentUsername = listeningStats.userHandle.ifBlank { "user" }
 
-    // Compute circular artist avatars from Subscribed Artists + Library Songs (ALWAYS using authentic artist portrait URLs, never playlist covers!)
-    val libraryArtists = remember(subscribedArtists, favoriteTracks, libraryPlaylists, downloadedTracks) {
+    // Compute circular artist avatars from Subscribed Artists + Played & Saved Songs,
+    // prioritizing each artist's real scraped YouTube Music profile portrait from artistAvatarMap!
+    val libraryArtists = remember(subscribedArtists, recentTracks, favoriteTracks, libraryPlaylists, downloadedTracks, artistAvatarMap) {
         val subscribedModels = subscribedArtists.map { sub ->
+            val key = sub.name.trim().lowercase()
+            val cleanSubAvatar = sub.avatarUrl.trim().takeIf {
+                it.isNotBlank() && !it.contains("FRX282637095.webp")
+            }
+            val resolvedAvatar = artistAvatarMap[key]?.takeIf { it.isNotBlank() }
+                ?: cleanSubAvatar
+                ?: CuratedHomeFallback.getArtistAvatarForName(sub.name)
             LibraryArtistCardModel(
                 name = sub.name,
                 subtitle = "Disubscribe",
-                avatarUrl = sub.avatarUrl.ifBlank {
-                    CuratedHomeFallback.getArtistAvatarForName(sub.name)
-                },
+                avatarUrl = resolvedAvatar,
                 isSubscribed = true
             )
         }
 
-        val subscribedNamesLower = subscribedModels.map { it.name.lowercase() }.toSet()
+        val subscribedNamesLower = subscribedModels.map { it.name.trim().lowercase() }.toSet()
 
         val userLibraryTracks = buildList {
+            addAll(recentTracks)
             addAll(favoriteTracks)
             libraryPlaylists.forEach { addAll(it.tracks) }
             downloadedTracks.forEach { add(it.toMusicItem()) }
         }
 
         val trackArtistModels = userLibraryTracks
-            .map { it.cleanArtist.substringBefore(",").substringBefore("&").trim() }
-            .filter {
-                it.isNotBlank() &&
-                    !it.equals("Artis", ignoreCase = true) &&
-                    !it.equals("Spotify", ignoreCase = true) &&
-                    !it.equals("YouTube Music", ignoreCase = true) &&
-                    it.lowercase() !in subscribedNamesLower
+            .mapNotNull { track ->
+                val primaryArtist = track.cleanArtist
+                    .substringBefore(",")
+                    .substringBefore("&")
+                    .trim()
+                if (primaryArtist.isBlank() ||
+                    primaryArtist.equals("Artis", ignoreCase = true) ||
+                    primaryArtist.equals("user", ignoreCase = true) ||
+                    primaryArtist.equals("Spotify", ignoreCase = true) ||
+                    primaryArtist.equals("YouTube Music", ignoreCase = true) ||
+                    primaryArtist.lowercase() in subscribedNamesLower
+                ) {
+                    null
+                } else {
+                    primaryArtist to track
+                }
             }
-            .groupBy { it.lowercase() }
-            .map { (_, names) ->
-                val displayName = names.first()
-                val count = names.size.coerceAtLeast(1)
+            .groupBy { it.first.lowercase() }
+            .map { (key, pairs) ->
+                val displayName = pairs.first().first
+                val distinctTracks = pairs.map { it.second }.distinctBy { it.videoId ?: it.id }
+                val count = distinctTracks.size.coerceAtLeast(1)
+                val ownTrackCover = distinctTracks.firstOrNull {
+                    it.highResThumbnail.isNotBlank() && !it.highResThumbnail.contains("FRX282637095.webp")
+                }?.highResThumbnail.orEmpty()
+                val resolvedAvatar = artistAvatarMap[key]?.takeIf { it.isNotBlank() }
+                    ?: ownTrackCover.ifBlank { CuratedHomeFallback.getArtistAvatarForName(displayName) }
+
                 LibraryArtistCardModel(
                     name = displayName,
                     subtitle = "$count lagu",
-                    avatarUrl = CuratedHomeFallback.getArtistAvatarForName(displayName),
+                    avatarUrl = resolvedAvatar,
                     isSubscribed = false
                 )
             }
 
         val combinedUser = subscribedModels + trackArtistModels
-        val existingNames = combinedUser.map { it.name.lowercase() }.toSet()
         if (combinedUser.isNotEmpty()) {
-            combinedUser + DefaultLibraryArtists.filter { it.name.lowercase() !in existingNames }.take(2)
+            combinedUser
         } else {
-            DefaultLibraryArtists
+            DefaultLibraryArtists.map { def ->
+                val key = def.name.trim().lowercase()
+                def.copy(avatarUrl = artistAvatarMap[key]?.takeIf { it.isNotBlank() } ?: def.avatarUrl)
+            }
+        }
+    }
+
+    // Automatically resolve real circular YouTube Music portraits for every artist in Library
+    androidx.compose.runtime.LaunchedEffect(libraryArtists) {
+        libraryArtists.forEach { artist ->
+            val key = artist.name.trim().lowercase()
+            val cached = artistAvatarMap[key]
+            if (cached.isNullOrBlank() || (!cached.contains("googleusercontent.com") && !cached.contains("ggpht.com"))) {
+                onResolveArtistAvatar(artist.name, null)
+            }
         }
     }
 

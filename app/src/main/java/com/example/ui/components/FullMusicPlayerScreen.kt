@@ -56,12 +56,16 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AllInclusive
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragHandle
@@ -72,6 +76,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.OndemandVideo
+import androidx.compose.material.icons.filled.PersonOutline
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Shuffle
@@ -223,6 +228,11 @@ fun FullMusicPlayerScreen(
     onToggleAutoPlay: () -> Unit,
     onSelectQueueTrack: (MusicItem) -> Unit,
     onRemoveQueueTrack: (MusicItem) -> Unit,
+    onPlayNext: (MusicItem) -> Unit = {},
+    onAddToQueue: (MusicItem) -> Unit = {},
+    onSetSleepTimerMinutes: (Int, String) -> Unit = { _, _ -> },
+    onSetSleepTimerEndOfTrack: () -> Unit = {},
+    onCancelSleepTimer: () -> Unit = {},
     onOpenArtistProfile: (String, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
@@ -231,13 +241,24 @@ fun FullMusicPlayerScreen(
 
     var showLyricsProviderSheet by remember { mutableStateOf(false) }
     var showPlayerMoreOptionsSheet by remember { mutableStateOf(false) }
+    var showSleepTimerOverlay by remember { mutableStateOf(false) }
     var showAddToPlaylistSheet by remember { mutableStateOf(false) }
 
     BackHandler {
-        if (activeSubView != PlayerSubView.MAIN) {
-            onChangeSubView(PlayerSubView.MAIN)
-        } else {
-            onClosePlayer()
+        when {
+            showSleepTimerOverlay -> {
+                showSleepTimerOverlay = false
+                showPlayerMoreOptionsSheet = false
+            }
+            showPlayerMoreOptionsSheet -> {
+                showPlayerMoreOptionsSheet = false
+            }
+            activeSubView != PlayerSubView.MAIN -> {
+                onChangeSubView(PlayerSubView.MAIN)
+            }
+            else -> {
+                onClosePlayer()
+            }
         }
     }
 
@@ -526,6 +547,20 @@ fun FullMusicPlayerScreen(
                         }
                 )
 
+                val isGlassOverlayActive = showPlayerMoreOptionsSheet || showSleepTimerOverlay
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (isGlassOverlayActive) {
+                                Modifier
+                                    .blur(radius = 34.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                                    .graphicsLayer { alpha = 0.26f }
+                            } else {
+                                Modifier
+                            }
+                        )
+                ) {
                 // =========================================================================
                 // 1. SHARED MORPHING ARTWORK STAGE (0f = Full-Bleed Seamless -> 1f = 52.dp)
                 // =========================================================================
@@ -820,7 +855,7 @@ fun FullMusicPlayerScreen(
                             modifier = Modifier
                                 .clickable {
                                     onClosePlayer()
-                                    onOpenArtistProfile(track.cleanArtist, effectiveCoverUrl)
+                                    onOpenArtistProfile(track.cleanArtist, "")
                                 }
                                 .testTag("full_player_track_artist")
                         )
@@ -857,16 +892,420 @@ fun FullMusicPlayerScreen(
                                 .clip(CircleShape)
                                 .background(frostedTint)
                                 .border(0.8.dp, frostedBorderTint, CircleShape)
-                                .clickable { showPlayerMoreOptionsSheet = true }
+                                .clickable {
+                                    showSleepTimerOverlay = false
+                                    showPlayerMoreOptionsSheet = true
+                                }
                                 .testTag("full_player_more_button"),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.MoreHoriz,
-                                contentDescription = "Opsi Lagu & Ganti Cover HD",
+                                contentDescription = "More options",
                                 tint = Color.White,
                                 modifier = Modifier.size(20.dp)
                             )
+                        }
+                    }
+                }
+                } // End of foreground stage Box
+
+                // =========================================================================
+                // 3.5 FLOATING FROSTED-GLASS 3-DOT MENU & SLEEP TIMER OVERLAY (Zero Extra Scrim)
+                // =========================================================================
+                if (isGlassOverlayActive) {
+                    val glassCardSurface = remember(midAtmosphereColor, bottomAtmosphereColor) {
+                        lerp(midAtmosphereColor, Color(0xFF2B222C), 0.52f).copy(alpha = 0.80f)
+                    }
+                    val glassCardBorder = Color.White.copy(alpha = 0.14f)
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .windowInsetsPadding(WindowInsets.statusBars)
+                            .windowInsetsPadding(WindowInsets.navigationBars)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
+                                showSleepTimerOverlay = false
+                                showPlayerMoreOptionsSheet = false
+                            }
+                            .padding(horizontal = 24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (showSleepTimerOverlay) {
+                            // SLEEP TIMER GLASS CARD (1:1 with reference screenshot)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(28.dp))
+                                    .background(glassCardSurface)
+                                    .border(1.dp, glassCardBorder, RoundedCornerShape(28.dp))
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) { /* consume click inside card */ }
+                                    .padding(horizontal = 22.dp, vertical = 24.dp)
+                                    .testTag("player_sleep_timer_card"),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = "Sleep timer",
+                                    fontFamily = PlusJakartaSans,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 18.5.sp,
+                                    color = Color.White,
+                                    textAlign = TextAlign.Center
+                                )
+
+                                Spacer(modifier = Modifier.height(20.dp))
+
+                                val pillBg = Color.White.copy(alpha = 0.13f)
+                                val activeLabel = playerState.sleepTimerLabel
+
+                                // Row 1: 10m | 15m
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    SleepTimerOptionPill(
+                                        label = "10m",
+                                        isActive = activeLabel == "10m",
+                                        backgroundColor = pillBg,
+                                        onClick = {
+                                            onSetSleepTimerMinutes(10, "10m")
+                                            showSleepTimerOverlay = false
+                                            showPlayerMoreOptionsSheet = false
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("sleep_timer_10m_button")
+                                    )
+                                    SleepTimerOptionPill(
+                                        label = "15m",
+                                        isActive = activeLabel == "15m",
+                                        backgroundColor = pillBg,
+                                        onClick = {
+                                            onSetSleepTimerMinutes(15, "15m")
+                                            showSleepTimerOverlay = false
+                                            showPlayerMoreOptionsSheet = false
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("sleep_timer_15m_button")
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                // Row 2: 30m | 1h
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    SleepTimerOptionPill(
+                                        label = "30m",
+                                        isActive = activeLabel == "30m",
+                                        backgroundColor = pillBg,
+                                        onClick = {
+                                            onSetSleepTimerMinutes(30, "30m")
+                                            showSleepTimerOverlay = false
+                                            showPlayerMoreOptionsSheet = false
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("sleep_timer_30m_button")
+                                    )
+                                    SleepTimerOptionPill(
+                                        label = "1h",
+                                        isActive = activeLabel == "1h",
+                                        backgroundColor = pillBg,
+                                        onClick = {
+                                            onSetSleepTimerMinutes(60, "1h")
+                                            showSleepTimerOverlay = false
+                                            showPlayerMoreOptionsSheet = false
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("sleep_timer_1h_button")
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                // Row 3: End of track (full width)
+                                SleepTimerOptionPill(
+                                    label = "End of track",
+                                    isActive = playerState.sleepTimerEndOfTrack,
+                                    backgroundColor = pillBg,
+                                    onClick = {
+                                        onSetSleepTimerEndOfTrack()
+                                        showSleepTimerOverlay = false
+                                        showPlayerMoreOptionsSheet = false
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("sleep_timer_end_of_track_button")
+                                )
+
+                                Spacer(modifier = Modifier.height(22.dp))
+
+                                Text(
+                                    text = "Cancel",
+                                    fontFamily = PlusJakartaSans,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.5.sp,
+                                    color = Color.White,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            if (playerState.sleepTimerLabel != null || playerState.sleepTimerEndOfTrack) {
+                                                onCancelSleepTimer()
+                                            }
+                                            showSleepTimerOverlay = false
+                                            showPlayerMoreOptionsSheet = false
+                                        }
+                                        .padding(horizontal = 24.dp, vertical = 6.dp)
+                                        .testTag("sleep_timer_cancel_button")
+                                )
+                            }
+                        } else if (showPlayerMoreOptionsSheet) {
+                            // 3-DOT OPTIONS GLASS CARD (1:1 with reference screenshot)
+                            val albumOrTrackContext = remember(track.subtitle, track.title, track.cleanArtist) {
+                                val afterDot = track.subtitle.substringAfter("•", "").trim()
+                                if (afterDot.isNotBlank() && !afterDot.contains("pemutaran", ignoreCase = true) && !afterDot.contains("views", ignoreCase = true)) {
+                                    "${track.cleanArtist} • $afterDot"
+                                } else {
+                                    "${track.cleanArtist} • ${track.title}"
+                                }
+                            }
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(28.dp))
+                                    .background(glassCardSurface)
+                                    .border(1.dp, glassCardBorder, RoundedCornerShape(28.dp))
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) { /* consume click inside card */ }
+                                    .padding(vertical = 18.dp)
+                                    .testTag("player_more_options_card")
+                            ) {
+                                // Top Header: Thumbnail + Title + Artist • Album
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp)
+                                ) {
+                                    AsyncImage(
+                                        model = effectiveCoverUrl,
+                                        contentDescription = track.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(52.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(CardPlaceholderDark)
+                                    )
+                                    Spacer(modifier = Modifier.width(14.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = track.title,
+                                            fontFamily = PlusJakartaSans,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 16.5.sp,
+                                            color = Color.White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = albumOrTrackContext,
+                                            fontFamily = PlusJakartaSans,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 13.5.sp,
+                                            color = Color.White.copy(alpha = 0.68f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(16.dp))
+                                HorizontalDivider(
+                                    color = Color.White.copy(alpha = 0.14f),
+                                    thickness = 1.dp,
+                                    modifier = Modifier.padding(horizontal = 20.dp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                // 1. Like
+                                PlayerGlassMenuRow(
+                                    icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    iconTint = if (isFavorite) ActiveHeartCoral else Color.White,
+                                    label = "Like",
+                                    trailingBadge = if (isFavorite) "Liked" else null,
+                                    onClick = {
+                                        onToggleFavorite(track)
+                                        showPlayerMoreOptionsSheet = false
+                                    },
+                                    modifier = Modifier.testTag("player_more_like_button")
+                                )
+
+                                // 2. Add to playlist
+                                PlayerGlassMenuRow(
+                                    icon = Icons.Default.Add,
+                                    iconTint = Color.White,
+                                    label = "Add to playlist",
+                                    onClick = {
+                                        showPlayerMoreOptionsSheet = false
+                                        showAddToPlaylistSheet = true
+                                    },
+                                    modifier = Modifier.testTag("player_more_add_to_playlist_button")
+                                )
+
+                                // 3. Play next
+                                PlayerGlassMenuRow(
+                                    icon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                                    iconTint = Color.White,
+                                    label = "Play next",
+                                    onClick = {
+                                        onPlayNext(track)
+                                        showPlayerMoreOptionsSheet = false
+                                    },
+                                    modifier = Modifier.testTag("player_more_play_next_button")
+                                )
+
+                                // 4. Add to queue
+                                PlayerGlassMenuRow(
+                                    icon = Icons.AutoMirrored.Filled.QueueMusic,
+                                    iconTint = Color.White,
+                                    label = "Add to queue",
+                                    onClick = {
+                                        onAddToQueue(track)
+                                        showPlayerMoreOptionsSheet = false
+                                    },
+                                    modifier = Modifier.testTag("player_more_add_to_queue_button")
+                                )
+
+                                // 5. Open artist
+                                PlayerGlassMenuRow(
+                                    icon = Icons.Default.PersonOutline,
+                                    iconTint = Color.White,
+                                    label = "Open artist",
+                                    onClick = {
+                                        showPlayerMoreOptionsSheet = false
+                                        onClosePlayer()
+                                        onOpenArtistProfile(track.cleanArtist, "")
+                                    },
+                                    modifier = Modifier.testTag("player_more_view_artist_button")
+                                )
+
+                                // 6. Sleep timer
+                                PlayerGlassMenuRow(
+                                    icon = Icons.Default.Bedtime,
+                                    iconTint = Color.White,
+                                    label = "Sleep timer",
+                                    trailingBadge = playerState.sleepTimerLabel,
+                                    onClick = {
+                                        showSleepTimerOverlay = true
+                                    },
+                                    modifier = Modifier.testTag("player_more_sleep_timer_button")
+                                )
+
+                                Spacer(modifier = Modifier.height(6.dp))
+                                HorizontalDivider(
+                                    color = Color.White.copy(alpha = 0.10f),
+                                    thickness = 0.8.dp,
+                                    modifier = Modifier.padding(horizontal = 20.dp)
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                // Compact quick-utility pills for Video Mode, Offline Download, and HD Cover
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(
+                                                if (isVideoModeActive) ActiveHeartCoral.copy(alpha = 0.25f)
+                                                else Color.White.copy(alpha = 0.10f)
+                                            )
+                                            .clickable {
+                                                onToggleVideoMode()
+                                                showPlayerMoreOptionsSheet = false
+                                            }
+                                            .padding(vertical = 10.dp, horizontal = 8.dp)
+                                            .testTag("player_more_toggle_video_button"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = if (isVideoModeActive) Icons.Default.Image else Icons.Default.OndemandVideo,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = if (isVideoModeActive) "Cover Mode" else "Video Mode",
+                                                fontFamily = PlusJakartaSans,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp,
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(Color.White.copy(alpha = 0.10f))
+                                            .clickable {
+                                                if (activeDownloadProgress == null) {
+                                                    if (isDownloaded) onRemoveDownload(track.id)
+                                                    else onDownloadTrack(track)
+                                                    showPlayerMoreOptionsSheet = false
+                                                }
+                                            }
+                                            .padding(vertical = 10.dp, horizontal = 8.dp)
+                                            .testTag("player_more_download_button"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = if (isDownloaded) Icons.Rounded.DownloadDone else Icons.Rounded.Download,
+                                                contentDescription = null,
+                                                tint = if (isDownloaded) Color(0xFF38EF7D) else Color.White,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = when {
+                                                    activeDownloadProgress != null -> "${activeDownloadProgress.progressPercent}%"
+                                                    isDownloaded -> "Downloaded"
+                                                    else -> "Download"
+                                                },
+                                                fontFamily = PlusJakartaSans,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp,
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -962,378 +1401,7 @@ fun FullMusicPlayerScreen(
         }
     }
 
-    // =========================================================================
-    // 5. MODAL BOTTOM SHEET: MENU TITIK TIGA (•••) -> GANTI COVER HD DARI LRC.RED
-    // =========================================================================
-    if (showPlayerMoreOptionsSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showPlayerMoreOptionsSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = SurfaceDark,
-            contentColor = TextPrimaryWhite
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    AsyncImage(
-                        model = effectiveCoverUrl,
-                        contentDescription = track.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(56.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(CardPlaceholderDark)
-                    )
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = track.title,
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 17.sp,
-                            color = TextPrimaryWhite,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = track.cleanArtist,
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.5.sp,
-                            color = TextSecondaryGrey,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                HorizontalDivider(color = Color(0xFF28282C))
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // 0. TAMPILKAN VIDEO MUSIK (FULL PLAYER) / KEMBALI KE SAMPUL GAMBAR
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                            if (isVideoModeActive) {
-                                Color(0xFF3B1D2E).copy(alpha = 0.85f)
-                            } else {
-                                Color(0xFF1F2436).copy(alpha = 0.85f)
-                            }
-                        )
-                        .border(
-                            width = 1.dp,
-                            color = if (isVideoModeActive) ActiveHeartCoral.copy(alpha = 0.45f) else Color(0xFF8AB4F8).copy(alpha = 0.35f),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        .clickable {
-                            onToggleVideoMode()
-                            showPlayerMoreOptionsSheet = false
-                        }
-                        .padding(horizontal = 14.dp, vertical = 14.dp)
-                        .testTag("player_more_toggle_video_button"),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = if (isVideoModeActive) Icons.Default.Image else Icons.Default.OndemandVideo,
-                        contentDescription = if (isVideoModeActive) "Kembali ke Sampul Gambar" else "Putar Video Musik Full",
-                        tint = if (isVideoModeActive) ActiveHeartCoral else Color(0xFF8AB4F8),
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (isVideoModeActive) {
-                                "Kembali ke Sampul Gambar (Cover Mode)"
-                            } else {
-                                "Tampilkan Video Musik (Full Player)"
-                            },
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp,
-                            color = Color.White
-                        )
-                        Text(
-                            text = if (isVideoModeActive) {
-                                "Matikan video dan tampilkan kembali gambar sampul lagu"
-                            } else {
-                                "Konversi & putar otomatis video YouTube penuh di area thumbnail"
-                            },
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.5.sp,
-                            color = Color.White.copy(alpha = 0.78f)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // 1. DOWNLOAD MUSIK OFFLINE (dengan bar % di Notifikasi)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF143828).copy(alpha = 0.65f))
-                        .clickable {
-                            if (activeDownloadProgress == null) {
-                                if (isDownloaded) {
-                                    onRemoveDownload(track.id)
-                                } else {
-                                    onDownloadTrack(track)
-                                }
-                                showPlayerMoreOptionsSheet = false
-                            }
-                        }
-                        .padding(horizontal = 14.dp, vertical = 14.dp)
-                        .testTag("player_more_download_button"),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (activeDownloadProgress != null) {
-                        CircularProgressIndicator(
-                            progress = { activeDownloadProgress.progressPercent / 100f },
-                            color = Color(0xFF38EF7D),
-                            strokeWidth = 2.5.dp,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    } else {
-                        Icon(
-                            imageVector = if (isDownloaded) Icons.Rounded.DownloadDone else Icons.Rounded.Download,
-                            contentDescription = "Download Musik Offline",
-                            tint = Color(0xFF38EF7D),
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = when {
-                                activeDownloadProgress != null -> "Mengunduh... ${activeDownloadProgress.progressPercent}%"
-                                isDownloaded -> "Tersimpan Offline (Ketuk untuk Hapus)"
-                                else -> "Download Musik (Offline)"
-                            },
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp,
-                            color = Color.White
-                        )
-                        Text(
-                            text = "Simpan ke penyimpanan & putar offline (Notifikasi %)",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.5.sp,
-                            color = Color.White.copy(alpha = 0.72f)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // 2. TAMBAHKAN KE PLAYLIST LIBRARY
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.06f))
-                        .clickable {
-                            showPlayerMoreOptionsSheet = false
-                            showAddToPlaylistSheet = true
-                        }
-                        .padding(horizontal = 14.dp, vertical = 14.dp)
-                        .testTag("player_more_add_to_playlist_button"),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.PlaylistAdd,
-                        contentDescription = "Tambahkan ke Playlist",
-                        tint = Color(0xFFB4C5FF),
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Tambahkan ke Playlist...",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp,
-                            color = TextPrimaryWhite
-                        )
-                        Text(
-                            text = "Simpan lagu ini ke playlist di halaman Library",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.5.sp,
-                            color = TextSecondaryGrey
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                val targetLrcCover = availableLrcHdCover ?: "https://lrc.red/s/FRX282637095.webp"
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.06f))
-                        .clickable {
-                            onApplyLrcHdCover(track, targetLrcCover)
-                            showPlayerMoreOptionsSheet = false
-                        }
-                        .padding(horizontal = 14.dp, vertical = 14.dp)
-                        .testTag("apply_lrc_hd_cover_button"),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.HighQuality,
-                        contentDescription = null,
-                        tint = ActiveHeartCoral,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Gunakan Thumbnail Versi HD (lrc.red)",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp,
-                            color = TextPrimaryWhite
-                        )
-                        Text(
-                            text = if (availableLrcHdCover != null) {
-                                "Sampul resolusi tinggi terdeteksi dari lrc.red"
-                            } else {
-                                "Terapkan sampul kualitas tinggi lrc.red (.webp)"
-                            },
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.5.sp,
-                            color = TextSecondaryGrey
-                        )
-                    }
-                }
-
-                if (hasCustomHdCover) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                onRestoreDefaultCover(track)
-                                showPlayerMoreOptionsSheet = false
-                            }
-                            .padding(horizontal = 14.dp, vertical = 12.dp)
-                            .testTag("restore_default_cover_button"),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Restore,
-                            contentDescription = null,
-                            tint = TextPrimaryWhite,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(14.dp))
-                        Text(
-                            text = "Kembalikan Thumbnail Default YouTube Music",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 14.5.sp,
-                            color = TextPrimaryWhite
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable {
-                            showPlayerMoreOptionsSheet = false
-                            onClosePlayer()
-                            onOpenArtistProfile(track.cleanArtist, effectiveCoverUrl)
-                        }
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
-                        .testTag("player_more_view_artist_button"),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = ActiveHeartCoral,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Lihat Profil Artis (${track.cleanArtist})",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 14.5.sp,
-                            color = TextPrimaryWhite
-                        )
-                        Text(
-                            text = "Buka halaman profil artis, album, single & lagu populer",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.5.sp,
-                            color = TextSecondaryGrey
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable {
-                            showPlayerMoreOptionsSheet = false
-                            showLyricsProviderSheet = true
-                        }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.MusicNote,
-                        contentDescription = null,
-                        tint = TextPrimaryWhite,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Penyedia Lirik: ${selectedLyricsProvider.displayName}",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 14.5.sp,
-                            color = TextPrimaryWhite
-                        )
-                        Text(
-                            text = "Ketuk untuk mengganti sumber lirik",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.5.sp,
-                            color = TextSecondaryGrey
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-            }
-        }
-    }
+    // Floating glass 3-dot menu & sleep timer are rendered inline inside the player stage above.
 
     if (showAddToPlaylistSheet) {
         AddToPlaylistBottomSheet(
@@ -1348,6 +1416,90 @@ fun FullMusicPlayerScreen(
                 onCreatePlaylistAndAddTrack(title, privacy, track)
                 showAddToPlaylistSheet = false
             }
+        )
+    }
+}
+
+@Composable
+private fun PlayerGlassMenuRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: Color,
+    label: String,
+    trailingBadge: String? = null,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = iconTint,
+            modifier = Modifier.size(23.dp)
+        )
+        Spacer(modifier = Modifier.width(18.dp))
+        Text(
+            text = label,
+            fontFamily = PlusJakartaSans,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.5.sp,
+            color = Color.White,
+            modifier = Modifier.weight(1f)
+        )
+        if (!trailingBadge.isNullOrBlank()) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.White.copy(alpha = 0.16f))
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text = trailingBadge,
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SleepTimerOptionPill(
+    label: String,
+    isActive: Boolean,
+    backgroundColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .height(52.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (isActive) Color.White.copy(alpha = 0.26f) else backgroundColor)
+            .then(
+                if (isActive) {
+                    Modifier.border(1.dp, Color.White.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                } else {
+                    Modifier
+                }
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            fontFamily = PlusJakartaSans,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            color = Color.White,
+            textAlign = TextAlign.Center
         )
     }
 }

@@ -423,6 +423,7 @@ fun PlaylistDetailScreen(
 
                 PlaylistTrackRowItem(
                     track = track,
+                    fallbackCoverUrl = coverUrl,
                     isCurrentlyPlaying = isCurrentlyPlaying,
                     isPlayingAudio = isPlayingAudio,
                     isDownloaded = isDownloaded,
@@ -874,6 +875,7 @@ private fun PlaylistHeroHeader(
 @Composable
 private fun PlaylistTrackRowItem(
     track: MusicItem,
+    fallbackCoverUrl: String = "",
     isCurrentlyPlaying: Boolean,
     isPlayingAudio: Boolean,
     isDownloaded: Boolean,
@@ -892,6 +894,24 @@ private fun PlaylistTrackRowItem(
     } else {
         Color.Transparent
     }
+
+    val cleanVid = remember(track.videoId, track.id) {
+        (track.videoId ?: track.id).takeIf {
+            it.isNotBlank() && !it.startsWith("UC") && !it.startsWith("VL") && !it.startsWith("MPRE")
+        }
+    }
+    val backupUrl = remember(cleanVid, fallbackCoverUrl) {
+        if (cleanVid != null) "https://i.ytimg.com/vi/$cleanVid/mqdefault.jpg"
+        else fallbackCoverUrl
+    }
+    val primaryUrl = remember(track.thumbnailUrl, cleanVid, fallbackCoverUrl) {
+        track.highResThumbnail.ifBlank {
+            if (cleanVid != null) "https://i.ytimg.com/vi/$cleanVid/hqdefault.jpg"
+            else fallbackCoverUrl
+        }
+    }
+    var useBackupThumb by remember(primaryUrl) { mutableStateOf(false) }
+    val activeThumbUrl = if (useBackupThumb && backupUrl.isNotBlank()) backupUrl else primaryUrl
 
     Row(
         modifier = Modifier
@@ -913,15 +933,20 @@ private fun PlaylistTrackRowItem(
             contentAlignment = Alignment.Center
         ) {
             AsyncImage(
-                model = remember(track.thumbnailUrl) {
+                model = remember(activeThumbUrl) {
                     ImageRequest.Builder(context)
-                        .data(track.highResThumbnail)
+                        .data(activeThumbUrl)
                         .size(Size(160, 160))
                         .crossfade(false)
                         .build()
                 },
                 contentDescription = track.title,
                 contentScale = ContentScale.Crop,
+                onError = {
+                    if (!useBackupThumb && backupUrl.isNotBlank() && backupUrl != primaryUrl) {
+                        useBackupThumb = true
+                    }
+                },
                 modifier = Modifier.matchParentSize()
             )
 
