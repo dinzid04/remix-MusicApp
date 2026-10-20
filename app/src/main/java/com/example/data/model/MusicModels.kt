@@ -19,7 +19,8 @@ data class MusicItem(
     val viewsAndCountText: String? = null,
     val releaseYear: String? = null,
     val sourcePlatformBadge: String? = null,
-    val localFilePath: String? = null
+    val localFilePath: String? = null,
+    val playCount: Int = 0
 ) {
     val isCollection: Boolean
         get() = type == "playlist" || type == "album" || type == "artist" ||
@@ -278,6 +279,39 @@ data class ArtistProfileDetail(
         get() = browseId
 }
 
+@Immutable
+data class SubscribedArtistItem(
+    val id: String = "",
+    val name: String,
+    val avatarUrl: String,
+    val subscribersText: String = "Artis",
+    val subscribedAt: Long = System.currentTimeMillis(),
+    val browseId: String = id
+)
+
+@Immutable
+data class SpotifyImportProgressState(
+    val isImporting: Boolean = false,
+    val playlistTitle: String = "",
+    val totalTracks: Int = 0,
+    val processedTracks: Int = 0,
+    val successCount: Int = 0,
+    val failedCount: Int = 0,
+    val currentTrackName: String = "",
+    val statusText: String = ""
+) {
+    val progressPercent: Int
+        get() = if (totalTracks <= 0) 0 else ((processedTracks * 100) / totalTracks).coerceIn(0, 100)
+    val isActive: Boolean
+        get() = isImporting
+    val succeededTracks: Int
+        get() = successCount
+    val failedTracks: Int
+        get() = failedCount
+    val currentTrackTitle: String
+        get() = currentTrackName.ifBlank { statusText }
+}
+
 enum class IntegrationPlatform(
     val id: String,
     val title: String,
@@ -397,8 +431,8 @@ enum class PlaylistPrivacy(val label: String) {
 }
 
 enum class PlaylistSourceType(val badge: String) {
-    CUSTOM("Qiaa"),
-    USER_CREATED("Qiaa"),
+    CUSTOM("user"),
+    USER_CREATED("user"),
     IMPORTED("Impor"),
     SPOTIFY_IMPORT("Spotify"),
     YOUTUBE_IMPORT("YouTube Music"),
@@ -474,7 +508,8 @@ data class ActiveDownloadProgress(
     val progressPercent: Int,
     val currentTrackIndex: Int = 1,
     val totalTracks: Int = 1,
-    val isCompleted: Boolean = false
+    val isCompleted: Boolean = false,
+    val statusText: String = ""
 )
 
 @Immutable
@@ -486,8 +521,8 @@ data class ListeningStatsState(
     val topSongTitle: String = topTrack?.title ?: "About You",
     val topSongArtist: String = topTrack?.cleanArtist ?: "The 1975",
     val topSongPlays: Int = 0,
-    val memberSince: String = "10/26",
-    val userHandle: String = "QIAA"
+    val memberSince: String = "20/10/2026",
+    val userHandle: String = "user"
 )
 
 @Immutable
@@ -551,4 +586,3 @@ data class ListenNowUiState(
     val selectedTrackForMenu: MusicItem? = null,
     val isShowingAllShortcutsSheet: Boolean = false
 )
-

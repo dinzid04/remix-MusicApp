@@ -1,6 +1,6 @@
 {
-  "summary": "Rencana perbaikan error GitHub Actions (NullPointerException pada kspReleaseKotlin / AWT-EventQueue-0 ApplicationManager.getApplication() is null) dengan menghapus ketergantungan KSP compiler yang memicu bug IntelliJ AWT di server CI headless, menggantinya dengan implementasi SQLite/DAO langsung yang 100% kompatibel, serta memperkuat workflow build-apk.yml.",
-  "updatedAt": "2026-10-19T22:33:14.662137446Z",
+  "summary": "Rencana implementasi lengkap untuk perbaikan halaman Profil Artis (Tentang Artis tanpa overlay kaku, klik Menampilkan Artis, thumbnail Video & pemutar Video di titik 3 Music Player, Album & Single menyatu tanpa tombol play, Subscribe masuk ke Library), pembaruan halaman Library (username default 'user' bisa diklik/diganti, akumulasi jumlah Plays lagu, tanggal Anggota Sejak sesuai install, foto profil Artis bulat, hapus Podcasts), notifikasi download di status bar HP, tampilan Detail Playlist blur menyatu beserta menu titik 3 lengkap (Play next, Add to queue, Download all, Share, Pin, Rename, Reorder songs, Delete playlist), serta pemindai Impor Spotify seluruh lagu dengan progress bar Berhasil/Gagal dan gambar asli per lagu.",
+  "updatedAt": "2026-10-20T10:11:01.060880479Z",
   "requestFeedback": true,
   "userFacing": true
 }

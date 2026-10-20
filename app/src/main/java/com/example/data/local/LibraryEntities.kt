@@ -4,6 +4,7 @@ import com.example.data.model.DownloadedTrackItem
 import com.example.data.model.MusicItem
 import com.example.data.model.PlaylistPrivacy
 import com.example.data.model.PlaylistSourceType
+import com.example.data.model.SubscribedArtistItem
 import com.example.data.model.UserLibraryPlaylist
 
 data class LibraryPlaylistEntity(
@@ -42,6 +43,7 @@ data class LibraryPlaylistEntity(
 }
 
 data class PlaylistTrackEntity(
+    val entryKey: String,
     val playlistId: String,
     val trackId: String,
     val title: String,
@@ -57,16 +59,18 @@ data class PlaylistTrackEntity(
         subtitle = subtitle,
         thumbnailUrl = thumbnailUrl,
         videoId = videoId ?: trackId,
+        playlistId = playlistId,
         type = "song",
         duration = duration
     )
 
     companion object {
         fun fromMusicItem(playlistId: String, item: MusicItem, orderOffset: Long = 0L): PlaylistTrackEntity {
-            val effectiveId = item.videoId ?: item.id
+            val effectiveTrackId = item.videoId ?: item.id
             return PlaylistTrackEntity(
+                entryKey = "${playlistId}_$effectiveTrackId",
                 playlistId = playlistId,
-                trackId = effectiveId,
+                trackId = effectiveTrackId,
                 title = item.title,
                 subtitle = item.subtitle,
                 thumbnailUrl = item.highResThumbnail,
@@ -102,4 +106,30 @@ data class DownloadedTrackEntity(
         fileSizeBytes = fileSizeBytes,
         downloadedAt = downloadedAt
     )
+}
+
+data class SubscribedArtistEntity(
+    val id: String,
+    val name: String,
+    val avatarUrl: String,
+    val subscribersText: String = "Artis",
+    val subscribedAt: Long = System.currentTimeMillis()
+) {
+    fun toDomain(): SubscribedArtistItem = SubscribedArtistItem(
+        id = id,
+        name = name,
+        avatarUrl = avatarUrl,
+        subscribersText = subscribersText,
+        subscribedAt = subscribedAt
+    )
+
+    companion object {
+        fun fromDomain(item: SubscribedArtistItem): SubscribedArtistEntity = SubscribedArtistEntity(
+            id = item.id,
+            name = item.name,
+            avatarUrl = item.avatarUrl,
+            subscribersText = item.subscribersText,
+            subscribedAt = item.subscribedAt
+        )
+    }
 }

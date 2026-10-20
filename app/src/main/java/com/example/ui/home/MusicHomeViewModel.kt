@@ -22,12 +22,17 @@ import com.example.data.model.PlaylistPrivacy
 import com.example.data.model.PlaylistSourceType
 import com.example.data.model.SearchCategorySection
 import com.example.data.model.SearchFilter
+import com.example.data.model.SpotifyImportProgressState
+import com.example.data.model.SubscribedArtistItem
 import com.example.data.model.UserLibraryPlaylist
 import com.example.data.remote.CuratedHomeFallback
 import com.example.data.repository.MusicRepository
 import com.example.player.AudioPlayerController
 import com.example.player.MusicDownloadManager
 import com.example.player.PlayerUiState
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -111,6 +116,44 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
     private val downloadManager = MusicDownloadManager.getInstance(application)
     private val prefs = application.getSharedPreferences("bitchord_experimental_prefs", Context.MODE_PRIVATE)
 
+    private val installDateFormatted: String by lazy {
+        val firstInstallMs = try {
+            val pkgInfo = application.packageManager.getPackageInfo(application.packageName, 0)
+            pkgInfo.firstInstallTime.takeIf { it > 0L } ?: getOrSaveFirstOpenTimestamp()
+        } catch (_: Exception) {
+            getOrSaveFirstOpenTimestamp()
+        }
+        val sdf = SimpleDateFormat("d MMM yyyy", Locale("id", "ID"))
+        sdf.format(Date(firstInstallMs))
+    }
+
+    private fun getOrSaveFirstOpenTimestamp(): Long {
+        val existing = prefs.getLong("first_app_open_timestamp", 0L)
+        if (existing > 0L) return existing
+        val now = System.currentTimeMillis()
+        prefs.edit().putLong("first_app_open_timestamp", now).apply()
+        return now
+    }
+
+    private val _username = MutableStateFlow(loadSavedUsername())
+    val username: StateFlow<String> = _username.asStateFlow()
+
+    private fun loadSavedUsername(): String {
+        val raw = prefs.getString("user_display_name", "user")?.trim()
+        return if (raw.isNullOrBlank() || raw.equals("QIAA", ignoreCase = true)) {
+            "user"
+        } else {
+            raw
+        }
+    }
+
+    fun updateUsername(newName: String) {
+        val clean = newName.trim().ifBlank { "user" }
+        _username.value = clean
+        prefs.edit().putString("user_display_name", clean).apply()
+        _uiMessage.value = "Username berhasil diubah menjadi \"$clean\""
+    }
+
     private val _scrapedSections = MutableStateFlow<List<HomeSection>>(emptyList())
     private val _isLoading = MutableStateFlow(true)
     private val _selectedTrackForMenu = MutableStateFlow<MusicItem?>(null)
@@ -143,6 +186,12 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptySet()
         )
+
+    val subscribedArtists: StateFlow<List<SubscribedArtistItem>> = repository.subscribedArtistsFlow.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
 
     val favoriteTracks: StateFlow<List<MusicItem>> = repository.favoriteTracksFlow.stateIn(
         scope = viewModelScope,
@@ -195,6 +244,9 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _integrationStatusMessage = MutableStateFlow<String?>(null)
     val integrationStatusMessage: StateFlow<String?> = _integrationStatusMessage.asStateFlow()
 
+    private val _spotifyImportProgress = MutableStateFlow(SpotifyImportProgressState())
+    val spotifyImportProgress: StateFlow<SpotifyImportProgressState> = _spotifyImportProgress.asStateFlow()
+
     private val _searchUiState = MutableStateFlow(SearchUiState())
     val searchUiState: StateFlow<SearchUiState> = _searchUiState.asStateFlow()
 
@@ -203,6 +255,15 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _activePlayerSubView = MutableStateFlow(PlayerSubView.MAIN)
     val activePlayerSubView: StateFlow<PlayerSubView> = _activePlayerSubView.asStateFlow()
+
+    private val _isVideoModeActive = MutableStateFlow(false)
+    val isVideoModeActive: StateFlow<Boolean> = _isVideoModeActive.asStateFlow()
+
+    private val _activeVideoStreamUrl = MutableStateFlow<String?>(null)
+    val activeVideoStreamUrl: StateFlow<String?> = _activeVideoStreamUrl.asStateFlow()
+
+    private val _isResolvingVideoStream = MutableStateFlow(false)
+    val isResolvingVideoStream: StateFlow<Boolean> = _isResolvingVideoStream.asStateFlow()
 
     private val _currentLyrics = MutableStateFlow<LyricsData?>(null)
     val currentLyrics: StateFlow<LyricsData?> = _currentLyrics.asStateFlow()
@@ -253,22 +314,54 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         initialValue = emptyList()
     )
 
+    private fun parseDurationMinutes(durationStr: String?): Int {
+        if (durationStr.isNullOrBlank()) return 4
+        val parts = durationStr.trim().split(":").mapNotNull { it.trim().toIntOrNull() }
+        val totalSec = when (parts.size) {
+            2 -> parts[0] * 60 + parts[1]
+            3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+            else -> 210
+        }
+        return ((totalSec + 30) / 60).coerceAtLeast(1)
+    }
+
     val listeningStats: StateFlow<ListeningStatsState> = combine(
         recentTracks,
-        favoriteTracks
-    ) { recents, favs ->
-        val baseTracks = recents.size + favs.size
-        val minutes = if (baseTracks == 0) 0 else (recents.size * 4) + (favs.size * 3)
-        val topTrack = recents.firstOrNull() ?: favs.firstOrNull()
+        favoriteTracks,
+        _username
+    ) { recents, favs, currentUsername ->
+        val totalPlays = recents.sumOf { it.playCount.coerceAtLeast(1) }
+        val minutes = if (recents.isEmpty()) {
+            0
+        } else {
+            recents.sumOf { track ->
+                parseDurationMinutes(track.duration) * track.playCount.coerceAtLeast(1)
+            }
+        }
+        val topPlayedTrack = recents.maxByOrNull { it.playCount }
+        val topTrack = topPlayedTrack ?: favs.firstOrNull()
+        val topSongTitle = topTrack?.title ?: "About You"
+        val topSongArtist = topTrack?.cleanArtist ?: "The 1975"
+        val topSongPlays = topPlayedTrack?.playCount?.coerceAtLeast(1) ?: 0
+
         ListeningStatsState(
             minutesListened = minutes,
+            totalPlays = totalPlays,
+            userHandle = currentUsername,
+            memberSince = installDateFormatted,
+            topSongTitle = topSongTitle,
+            topSongArtist = topSongArtist,
+            topSongPlays = topSongPlays,
             topTrack = topTrack,
-            totalTracksPlayed = recents.size
+            totalTracksPlayed = totalPlays
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
-        initialValue = ListeningStatsState()
+        initialValue = ListeningStatsState(
+            userHandle = _username.value,
+            memberSince = installDateFormatted
+        )
     )
 
     private var trackEnrichmentJob: Job? = null
@@ -307,7 +400,7 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
             topShelfTitle = "Pilihan cepat",
             topShelfItems = topShelfItems,
             carouselSections = remainingSections,
-            importedPlaylists = emptyList(), // Imported playlists live in Library screen per user request
+            importedPlaylists = emptyList(),
             hasListenedToMusic = recents.isNotEmpty(),
             selectedTrackForMenu = menuTrack,
             homeThemeMode = themeMode,
@@ -344,7 +437,18 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                 playerController.updateCurrentTrackFavoriteStatus(isFav)
             }
         }
-        // Keep open special playlists (Liked Songs, Downloads, User Playlists) synced in real time
+        viewModelScope.launch {
+            subscribedArtists.collect { subs ->
+                val ids = buildSet {
+                    subs.forEach { artist ->
+                        add(artist.browseId)
+                        add(artist.name)
+                        add("UC_${artist.name.lowercase()}")
+                    }
+                }
+                _artistScreenState.update { it.copy(followedArtistIds = ids) }
+            }
+        }
         viewModelScope.launch {
             favoriteTracks.collect { favs ->
                 val current = _playlistScreenState.value
@@ -352,8 +456,11 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                     _playlistScreenState.update {
                         it.copy(
                             playlist = it.playlist?.copy(
-                                subtitle = "Playlist Otomatis • ${favs.size} lagu",
+                                subtitle = "${_username.value}, ${favs.size} lagu",
+                                authorSubtitle = "${_username.value}, ${favs.size} lagu",
+                                metaSubtitle = "PLAYLIST • ${favs.size} TRACKS",
                                 thumbnailUrl = favs.firstOrNull()?.thumbnailUrl ?: "",
+                                totalTracks = favs.size,
                                 tracks = favs
                             )
                         )
@@ -369,8 +476,11 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                     _playlistScreenState.update {
                         it.copy(
                             playlist = it.playlist?.copy(
-                                subtitle = "Musik Offline • ${items.size} lagu",
+                                subtitle = "${_username.value}, ${items.size} lagu",
+                                authorSubtitle = "${_username.value}, ${items.size} lagu",
+                                metaSubtitle = "PLAYLIST • ${items.size} TRACKS",
                                 thumbnailUrl = items.firstOrNull()?.thumbnailUrl ?: "",
+                                totalTracks = items.size,
                                 tracks = items
                             )
                         )
@@ -385,19 +495,23 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                 if (current.isVisible && openId != null) {
                     val match = playlists.firstOrNull { it.id == openId }
                     if (match != null) {
+                        val effectiveTracks = if (match.tracks.isNotEmpty() || match.sourceType == PlaylistSourceType.USER_CREATED) {
+                            match.tracks
+                        } else {
+                            current.playlist.tracks
+                        }
                         _playlistScreenState.update {
                             it.copy(
                                 playlist = it.playlist?.copy(
                                     title = match.title,
                                     subtitle = match.subtitle,
+                                    authorSubtitle = "${_username.value}, ${effectiveTracks.size} lagu",
+                                    metaSubtitle = "PLAYLIST • ${effectiveTracks.size} TRACKS",
                                     thumbnailUrl = match.thumbnailUrl.ifBlank {
-                                        match.tracks.firstOrNull()?.thumbnailUrl ?: ""
+                                        effectiveTracks.firstOrNull()?.thumbnailUrl ?: ""
                                     },
-                                    tracks = if (match.tracks.isNotEmpty() || match.sourceType == PlaylistSourceType.USER_CREATED) {
-                                        match.tracks
-                                    } else {
-                                        it.playlist.tracks
-                                    }
+                                    totalTracks = effectiveTracks.size,
+                                    tracks = effectiveTracks
                                 )
                             )
                         }
@@ -439,13 +553,13 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // ========================================================================
-    // LIBRARY & PLAYLIST MANAGEMENT (CREATE, RENAME, DELETE, PIN, ADD TRACK, SAVE)
+    // LIBRARY & PLAYLIST MANAGEMENT (CREATE, RENAME, DELETE, PIN, REORDER, ADD TRACK, SAVE)
     // ========================================================================
     fun createCustomPlaylist(title: String, privacy: PlaylistPrivacy = PlaylistPrivacy.PUBLIC) {
         val clean = title.trim()
         if (clean.isBlank()) return
         viewModelScope.launch {
-            repository.createCustomPlaylist(clean, privacy)
+            repository.createCustomPlaylist(clean, privacy, ownerUsername = _username.value)
             _uiMessage.value = "Playlist \"$clean\" berhasil dibuat di Library"
         }
     }
@@ -458,7 +572,7 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         val clean = title.trim()
         if (clean.isBlank()) return
         viewModelScope.launch {
-            val created = repository.createCustomPlaylist(clean, privacy)
+            val created = repository.createCustomPlaylist(clean, privacy, ownerUsername = _username.value)
             repository.addTrackToLibraryPlaylist(created.id, track)
             _uiMessage.value = "\"${track.title}\" disimpan ke playlist baru \"$clean\""
         }
@@ -469,6 +583,11 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         if (clean.isBlank()) return
         viewModelScope.launch {
             repository.renameLibraryPlaylist(playlistId, clean)
+            if (_playlistScreenState.value.playlist?.id == playlistId) {
+                _playlistScreenState.update { st ->
+                    st.copy(playlist = st.playlist?.copy(title = clean))
+                }
+            }
             _uiMessage.value = "Nama playlist diubah menjadi \"$clean\""
         }
     }
@@ -485,15 +604,73 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun togglePinLibraryPlaylist(playlistId: String) {
         viewModelScope.launch {
-            val target = libraryPlaylists.value.firstOrNull { it.id == playlistId } ?: return@launch
-            val nextPinned = !target.isPinned
-            repository.setPlaylistPinned(playlistId, nextPinned)
-            _uiMessage.value = if (nextPinned) {
-                "\"${target.title}\" disematkan (Pin) di atas Library"
+            val target = libraryPlaylists.value.firstOrNull { it.id == playlistId }
+            if (target != null) {
+                val nextPinned = !target.isPinned
+                repository.setPlaylistPinned(playlistId, nextPinned)
+                _uiMessage.value = if (nextPinned) {
+                    "\"${target.title}\" disematkan (Pin) di atas Library"
+                } else {
+                    "Pin \"${target.title}\" dilepas"
+                }
             } else {
-                "Pin \"${target.title}\" dilepas"
+                val openDetail = _playlistScreenState.value.playlist
+                if (openDetail != null && openDetail.id == playlistId) {
+                    repository.savePlaylistToLibrary(openDetail, PlaylistSourceType.SAVED_COMMUNITY)
+                    repository.setPlaylistPinned(playlistId, true)
+                    _uiMessage.value = "\"${openDetail.title}\" disimpan & disematkan (Pin) di Library"
+                }
             }
         }
+    }
+
+    fun reorderPlaylistTracks(playlistId: String, newOrderedTracks: List<MusicItem>) {
+        _playlistScreenState.update { st ->
+            if (st.playlist?.id == playlistId) {
+                st.copy(
+                    playlist = st.playlist.copy(
+                        tracks = newOrderedTracks,
+                        totalTracks = newOrderedTracks.size
+                    )
+                )
+            } else {
+                st
+            }
+        }
+        viewModelScope.launch {
+            if (savedPlaylistIds.value.contains(playlistId)) {
+                repository.reorderPlaylistTracks(playlistId, newOrderedTracks)
+            }
+            _uiMessage.value = "Urutan lagu di playlist diperbarui"
+        }
+    }
+
+    fun playPlaylistNext(detail: PlaylistDetail) {
+        if (detail.tracks.isEmpty()) {
+            _uiMessage.value = "Tidak ada lagu di playlist ini"
+            return
+        }
+        playerController.playNextInQueue(
+            tracks = detail.tracks,
+            sourceLabel = "Playing from ${detail.title}",
+            resolveStream = { track -> repository.resolveAudioStream(track) },
+            onTrackStarted = { startedTrack -> enrichTrackPlaybackContext(startedTrack) }
+        )
+        _uiMessage.value = "${detail.tracks.size} lagu dari \"${detail.title}\" akan diputar berikutnya"
+    }
+
+    fun addPlaylistToQueue(detail: PlaylistDetail) {
+        if (detail.tracks.isEmpty()) {
+            _uiMessage.value = "Tidak ada lagu di playlist ini"
+            return
+        }
+        playerController.addToQueue(
+            tracks = detail.tracks,
+            sourceLabel = "Playing from ${detail.title}",
+            resolveStream = { track -> repository.resolveAudioStream(track) },
+            onTrackStarted = { startedTrack -> enrichTrackPlaybackContext(startedTrack) }
+        )
+        _uiMessage.value = "${detail.tracks.size} lagu dari \"${detail.title}\" ditambahkan ke antrean"
     }
 
     fun addTrackToLibraryPlaylist(playlistId: String, track: MusicItem) {
@@ -535,10 +712,13 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
             playlist = PlaylistDetail(
                 id = LIKED_SONGS_PLAYLIST_ID,
                 title = "Musik yang Disukai",
-                subtitle = "Playlist Otomatis • ${favs.size} lagu",
+                subtitle = "${_username.value}, ${favs.size} lagu",
+                authorSubtitle = "${_username.value}, ${favs.size} lagu",
+                metaSubtitle = "PLAYLIST • ${favs.size} TRACKS",
                 description = "Semua lagu yang Anda tandai suka tersimpan di sini.",
                 thumbnailUrl = favs.firstOrNull()?.thumbnailUrl ?: "",
                 isAlbum = false,
+                totalTracks = favs.size,
                 tracks = favs
             )
         )
@@ -552,10 +732,13 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
             playlist = PlaylistDetail(
                 id = DOWNLOADS_PLAYLIST_ID,
                 title = "Downloads",
-                subtitle = "Musik Offline • ${items.size} lagu",
+                subtitle = "${_username.value}, ${items.size} lagu",
+                authorSubtitle = "${_username.value}, ${items.size} lagu",
+                metaSubtitle = "PLAYLIST • ${items.size} TRACKS",
                 description = "Lagu yang telah diunduh ke penyimpanan perangkat & siap diputar offline.",
                 thumbnailUrl = items.firstOrNull()?.thumbnailUrl ?: "",
                 isAlbum = false,
+                totalTracks = items.size,
                 tracks = items
             )
         )
@@ -582,10 +765,13 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                 playlist = PlaylistDetail(
                     id = LOCAL_MUSIC_PLAYLIST_ID,
                     title = "Local Music",
-                    subtitle = "Penyimpanan Perangkat • ${combined.size} lagu",
+                    subtitle = "${_username.value}, ${combined.size} lagu",
+                    authorSubtitle = "${_username.value}, ${combined.size} lagu",
+                    metaSubtitle = "PLAYLIST • ${combined.size} TRACKS",
                     description = "File audio dari penyimpanan lokal & folder Music/BitChord perangkat Anda.",
                     thumbnailUrl = combined.firstOrNull()?.thumbnailUrl ?: "",
                     isAlbum = false,
+                    totalTracks = combined.size,
                     tracks = combined
                 )
             )
@@ -596,12 +782,15 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         val initialDetail = PlaylistDetail(
             id = userPlaylist.id,
             title = userPlaylist.title,
-            subtitle = userPlaylist.subtitle,
+            subtitle = "${_username.value}, ${userPlaylist.tracks.size} lagu",
+            authorSubtitle = "${_username.value}, ${userPlaylist.tracks.size} lagu",
+            metaSubtitle = "PLAYLIST • ${userPlaylist.tracks.size} TRACKS",
             description = userPlaylist.description,
             thumbnailUrl = userPlaylist.thumbnailUrl.ifBlank {
                 userPlaylist.tracks.firstOrNull()?.thumbnailUrl ?: ""
             },
             isAlbum = false,
+            totalTracks = userPlaylist.tracks.size,
             tracks = userPlaylist.tracks
         )
 
@@ -619,15 +808,22 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                 val seed = userPlaylist.toMusicItem()
                 val fetched = repository.fetchPlaylistOrAlbumDetail(seed)
                 if (fetched.tracks.isNotEmpty()) {
+                    val enriched = fetched.copy(
+                        id = userPlaylist.id,
+                        title = userPlaylist.title,
+                        authorSubtitle = "${_username.value}, ${fetched.tracks.size} lagu",
+                        metaSubtitle = "PLAYLIST • ${fetched.tracks.size} TRACKS",
+                        totalTracks = fetched.tracks.size
+                    )
                     repository.savePlaylistToLibrary(
-                        playlistDetail = fetched.copy(id = userPlaylist.id, title = userPlaylist.title),
+                        playlistDetail = enriched,
                         sourceType = userPlaylist.sourceType,
                         platformBadge = userPlaylist.platformBadge
                     )
                     _playlistScreenState.update {
                         it.copy(
                             isLoading = false,
-                            playlist = fetched.copy(id = userPlaylist.id, title = userPlaylist.title)
+                            playlist = enriched
                         )
                     }
                 } else {
@@ -652,7 +848,7 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
         )
-        _uiMessage.value = "Mengunduh \"${track.title}\" (lihat progres di Notifikasi)..."
+        _uiMessage.value = "Mengunduh \"${track.title}\" (lihat progres % di Notifikasi Status Bar)..."
     }
 
     fun downloadPlaylistOrAlbum(detail: PlaylistDetail) {
@@ -668,7 +864,7 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                 refreshLocalDeviceMusic()
             }
         )
-        _uiMessage.value = "Mengunduh ${detail.tracks.size} lagu dari \"${detail.title}\"..."
+        _uiMessage.value = "Mengunduh ${detail.tracks.size} lagu dari \"${detail.title}\" (lihat progres % di Status Bar)..."
     }
 
     fun downloadMusicItemCollection(collectionItem: MusicItem) {
@@ -700,7 +896,7 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // ========================================================================
-    // ARTIST PROFILE SCREEN NAVIGATION & ACTIONS
+    // ARTIST PROFILE SCREEN NAVIGATION & SUBSCRIBE TO LIBRARY
     // ========================================================================
     fun openArtistProfile(seedItem: MusicItem) {
         val current = _artistScreenState.value.artistProfile
@@ -743,11 +939,15 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
             .substringBefore("&")
             .trim()
             .ifBlank { artistName }
+        val effectiveThumb = thumbnailUrl.ifBlank {
+            subscribedArtists.value.firstOrNull { it.name.equals(cleanName, ignoreCase = true) }?.avatarUrl
+                ?: CuratedHomeFallback.getArtistAvatarForName(cleanName)
+        }
         val seed = MusicItem(
             id = "artist_${cleanName.lowercase()}",
             title = cleanName,
             subtitle = "Artis",
-            thumbnailUrl = thumbnailUrl,
+            thumbnailUrl = effectiveThumb,
             browseId = "UC_${cleanName.lowercase()}",
             type = "artist"
         )
@@ -772,13 +972,45 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun toggleFollowArtist(artistIdOrName: String) {
-        _artistScreenState.update { state ->
-            val nextSet = if (state.followedArtistIds.contains(artistIdOrName)) {
-                state.followedArtistIds - artistIdOrName
-            } else {
-                state.followedArtistIds + artistIdOrName
+        val currentProfile = _artistScreenState.value.artistProfile
+        val browseId = currentProfile?.browseId?.takeIf { it.isNotBlank() } ?: artistIdOrName
+        val artistName = currentProfile?.name?.takeIf { it.isNotBlank() } ?: artistIdOrName
+        val isCurrentlyFollowed = _artistScreenState.value.followedArtistIds.contains(browseId) ||
+            _artistScreenState.value.followedArtistIds.contains(artistName) ||
+            subscribedArtists.value.any {
+                it.browseId.equals(browseId, ignoreCase = true) ||
+                    it.name.equals(artistName, ignoreCase = true)
             }
-            state.copy(followedArtistIds = nextSet)
+
+        viewModelScope.launch {
+            if (isCurrentlyFollowed) {
+                repository.deleteSubscribedArtist(browseId)
+                repository.deleteSubscribedArtist(artistName)
+                _artistScreenState.update { state ->
+                    state.copy(
+                        followedArtistIds = state.followedArtistIds - setOf(browseId, artistName, "UC_${artistName.lowercase()}")
+                    )
+                }
+                _uiMessage.value = "Berhenti subscribe $artistName (dihapus dari Library)"
+            } else {
+                val realAvatar = currentProfile?.avatarUrl?.takeIf { it.isNotBlank() }
+                    ?: currentProfile?.headerImageUrl?.takeIf { it.isNotBlank() }
+                    ?: CuratedHomeFallback.getArtistAvatarForName(artistName)
+                val item = SubscribedArtistItem(
+                    id = browseId,
+                    browseId = browseId,
+                    name = artistName,
+                    avatarUrl = realAvatar,
+                    subscribersText = currentProfile?.subscribersText ?: "Artis"
+                )
+                repository.upsertSubscribedArtist(item)
+                _artistScreenState.update { state ->
+                    state.copy(
+                        followedArtistIds = state.followedArtistIds + setOf(browseId, artistName, "UC_${artistName.lowercase()}")
+                    )
+                }
+                _uiMessage.value = "Berhasil subscribe $artistName! Tersimpan di seksi Artis pada Library"
+            }
         }
     }
 
@@ -814,10 +1046,13 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
             val detail = PlaylistDetail(
                 id = item.id,
                 title = item.title,
-                subtitle = item.subtitle.ifBlank { "Impor $platformBadge • ${tracks.size} lagu" },
+                subtitle = "${_username.value} • ${tracks.size} lagu",
+                authorSubtitle = "${_username.value}, ${tracks.size} lagu",
+                metaSubtitle = "PLAYLIST • ${tracks.size} TRACKS",
                 description = "Diimpor dari $platformBadge ke Library Anda",
                 thumbnailUrl = item.thumbnailUrl.ifBlank { tracks.firstOrNull()?.thumbnailUrl ?: "" },
                 isAlbum = false,
+                totalTracks = tracks.size,
                 tracks = tracks
             )
             repository.savePlaylistToLibrary(
@@ -832,7 +1067,18 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             _isIntegrationSyncing.value = true
             _integrationStatusMessage.value = null
-            val result = repository.connectSpotifyAndImport(accountInput, tokenOrUrl)
+            _spotifyImportProgress.value = SpotifyImportProgressState(
+                isImporting = true,
+                playlistTitle = "Menghubungkan Spotify...",
+                statusText = "Memindai daftar lagu playlist..."
+            )
+            val result = repository.connectSpotifyAndImport(
+                accountInput = accountInput,
+                tokenOrUrl = tokenOrUrl,
+                onProgress = { progress ->
+                    _spotifyImportProgress.value = progress
+                }
+            )
             _spotifyAccount.value = result.account
             _importedPlaylists.update { current ->
                 (result.importedPlaylists + current).distinctBy { it.id }
@@ -847,7 +1093,18 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             _isIntegrationSyncing.value = true
             _integrationStatusMessage.value = null
-            val result = repository.connectYouTubeMusicAndImport(googleEmail, tokenOrUrl)
+            _spotifyImportProgress.value = SpotifyImportProgressState(
+                isImporting = true,
+                playlistTitle = "Menghubungkan YouTube Music...",
+                statusText = "Memindai daftar lagu playlist..."
+            )
+            val result = repository.connectYouTubeMusicAndImport(
+                googleEmail = googleEmail,
+                tokenOrUrl = tokenOrUrl,
+                onProgress = { progress ->
+                    _spotifyImportProgress.value = progress
+                }
+            )
             _youtubeMusicAccount.value = result.account
             _importedPlaylists.update { current ->
                 (result.importedPlaylists + current).distinctBy { it.id }
@@ -864,15 +1121,31 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             _isIntegrationSyncing.value = true
             _integrationStatusMessage.value = null
-            val imported = repository.importPlaylistByUrl(platform, clean)
+            _spotifyImportProgress.value = SpotifyImportProgressState(
+                isImporting = true,
+                playlistTitle = "Memindai tautan ${platform.displayName}...",
+                statusText = "Mengekstrak seluruh lagu dari playlist..."
+            )
+            val imported = repository.importPlaylistByUrl(
+                platform = platform,
+                urlOrId = clean,
+                onProgress = { progress ->
+                    _spotifyImportProgress.value = progress
+                }
+            )
             if (imported != null) {
                 _importedPlaylists.update { current ->
                     (listOf(imported) + current).distinctBy { it.id }
                 }
                 persistImportedPlaylistsToLibrary(listOf(imported), platform.displayName)
-                val msg = "Playlist \"${imported.title}\" berhasil diimpor ke Library!"
-                _integrationStatusMessage.value = msg
-                _uiMessage.value = msg
+                val finalProg = _spotifyImportProgress.value
+                val summary = if (finalProg.totalTracks > 0) {
+                    "Playlist \"${imported.title}\" selesai diimpor (${finalProg.successCount} berhasil, ${finalProg.failedCount} gagal)!"
+                } else {
+                    "Playlist \"${imported.title}\" (${imported.previewTracks.size} lagu) berhasil diimpor ke Library!"
+                }
+                _integrationStatusMessage.value = summary
+                _uiMessage.value = summary
             } else {
                 val errMsg = "Gagal mengimpor playlist dari tautan tersebut."
                 _integrationStatusMessage.value = errMsg
@@ -1094,10 +1367,13 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
                 val detail = PlaylistDetail(
                     id = playlistItem.id,
                     title = playlistItem.title,
-                    subtitle = playlistItem.subtitle.ifBlank { "Playlist • ${tracks.size} lagu" },
+                    subtitle = "${_username.value} • ${tracks.size} lagu",
+                    authorSubtitle = "${_username.value}, ${tracks.size} lagu",
+                    metaSubtitle = "PLAYLIST • ${tracks.size} TRACKS",
                     description = "Disimpan ke Library Anda",
                     thumbnailUrl = playlistItem.thumbnailUrl,
                     isAlbum = playlistItem.type == "album",
+                    totalTracks = tracks.size,
                     tracks = tracks
                 )
                 repository.savePlaylistToLibrary(
@@ -1110,7 +1386,7 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // ========================================================================
-    // PLAYER & LYRICS PROVIDER LOGIC
+    // PLAYER, VIDEO SWITCHER & LYRICS PROVIDER LOGIC
     // ========================================================================
     fun openFullPlayer(initialSubView: PlayerSubView = PlayerSubView.MAIN) {
         _activePlayerSubView.value = initialSubView
@@ -1129,6 +1405,32 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
             _activePlayerSubView.value = PlayerSubView.MAIN
         } else {
             _activePlayerSubView.value = subView
+        }
+    }
+
+    fun toggleVideoPlayerMode() {
+        val nextMode = !_isVideoModeActive.value
+        _isVideoModeActive.value = nextMode
+        if (nextMode) {
+            _activePlayerSubView.value = PlayerSubView.MAIN
+            val currentTrack = playerController.playerState.value.currentTrack
+            if (currentTrack != null) {
+                _isResolvingVideoStream.value = true
+                viewModelScope.launch {
+                    val streamUrl = repository.resolveVideoStreamUrl(currentTrack)
+                    _activeVideoStreamUrl.value = streamUrl
+                    _isResolvingVideoStream.value = false
+                }
+                _uiMessage.value = "Beralih ke Mode Video Musik"
+            }
+        } else {
+            _uiMessage.value = "Kembali ke Tampilan Sampul Musik"
+        }
+    }
+
+    fun disableVideoPlayerMode() {
+        if (_isVideoModeActive.value) {
+            _isVideoModeActive.value = false
         }
     }
 
@@ -1309,6 +1611,9 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
     private fun enrichTrackPlaybackContext(item: MusicItem) {
         val preferred = _selectedLyricsProvider.value
         _currentLyrics.value = null
+        // Default to cover image first when a track/video starts; user can switch to video mode via 3-dots menu
+        _isVideoModeActive.value = false
+        _activeVideoStreamUrl.value = null
 
         trackEnrichmentJob?.cancel()
         trackEnrichmentJob = viewModelScope.launch {

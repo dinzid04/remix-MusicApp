@@ -68,11 +68,14 @@ import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -194,6 +197,10 @@ fun FullMusicPlayerScreen(
     isDownloaded: Boolean = false,
     activeDownloadProgress: ActiveDownloadProgress? = null,
     libraryPlaylists: List<UserLibraryPlaylist> = emptyList(),
+    isVideoModeActive: Boolean = false,
+    activeVideoStreamUrl: String? = null,
+    isResolvingVideoStream: Boolean = false,
+    onToggleVideoMode: () -> Unit = {},
     onClosePlayer: () -> Unit,
     onChangeSubView: (PlayerSubView) -> Unit,
     onSelectLyricsProvider: (LyricsProvider) -> Unit,
@@ -539,34 +546,47 @@ fun FullMusicPlayerScreen(
                         1.0f
                     }
 
-                    AsyncImage(
-                        model = heroImageRequest,
-                        contentDescription = track.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                compositingStrategy = CompositingStrategy.Offscreen
-                                scaleX = coverScaleFactor
-                                scaleY = coverScaleFactor
-                            }
-                            .drawWithContent {
-                                drawContent()
-                                // Seamless bottom alpha dissolve using BlendMode.DstIn so there is ZERO horizontal seam!
-                                if (dissolveStrength > 0.01f) {
-                                    drawRect(
-                                        brush = Brush.verticalGradient(
-                                            0.00f to Color.Black,
-                                            0.54f to Color.Black,
-                                            0.72f to Color.Black.copy(alpha = 1f - 0.38f * dissolveStrength),
-                                            0.87f to Color.Black.copy(alpha = 1f - 0.78f * dissolveStrength),
-                                            1.00f to Color.Black.copy(alpha = 1f - 1.00f * dissolveStrength)
-                                        ),
-                                        blendMode = BlendMode.DstIn
-                                    )
+                    if (isVideoModeActive && subViewMorph < 0.65f) {
+                        FullBleedMusicVideoStage(
+                            videoId = track.videoId ?: track.id,
+                            directVideoStreamUrl = activeVideoStreamUrl,
+                            isResolvingStream = isResolvingVideoStream,
+                            isPlaying = playerState.isPlaying,
+                            currentPositionSec = playerState.currentPositionSec.toFloat(),
+                            fallbackCoverReq = heroImageRequest,
+                            dissolveStrength = dissolveStrength,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        AsyncImage(
+                            model = heroImageRequest,
+                            contentDescription = track.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    compositingStrategy = CompositingStrategy.Offscreen
+                                    scaleX = coverScaleFactor
+                                    scaleY = coverScaleFactor
                                 }
-                            }
-                    )
+                                .drawWithContent {
+                                    drawContent()
+                                    // Seamless bottom alpha dissolve using BlendMode.DstIn so there is ZERO horizontal seam!
+                                    if (dissolveStrength > 0.01f) {
+                                        drawRect(
+                                            brush = Brush.verticalGradient(
+                                                0.00f to Color.Black,
+                                                0.54f to Color.Black,
+                                                0.72f to Color.Black.copy(alpha = 1f - 0.38f * dissolveStrength),
+                                                0.87f to Color.Black.copy(alpha = 1f - 0.78f * dissolveStrength),
+                                                1.00f to Color.Black.copy(alpha = 1f - 1.00f * dissolveStrength)
+                                            ),
+                                            blendMode = BlendMode.DstIn
+                                        )
+                                    }
+                                }
+                        )
+                    }
 
                     // Top subtle scrim + Centered "Playing from" header over the Full-Bleed Artwork (only in Main Player)
                     if (dissolveStrength > 0.01f) {
@@ -995,6 +1015,66 @@ fun FullMusicPlayerScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
                 HorizontalDivider(color = Color(0xFF28282C))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 0. TAMPILKAN VIDEO MUSIK (FULL PLAYER) / KEMBALI KE SAMPUL GAMBAR
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (isVideoModeActive) {
+                                Color(0xFF3B1D2E).copy(alpha = 0.85f)
+                            } else {
+                                Color(0xFF1F2436).copy(alpha = 0.85f)
+                            }
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (isVideoModeActive) ActiveHeartCoral.copy(alpha = 0.45f) else Color(0xFF8AB4F8).copy(alpha = 0.35f),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .clickable {
+                            onToggleVideoMode()
+                            showPlayerMoreOptionsSheet = false
+                        }
+                        .padding(horizontal = 14.dp, vertical = 14.dp)
+                        .testTag("player_more_toggle_video_button"),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (isVideoModeActive) Icons.Default.Image else Icons.Default.OndemandVideo,
+                        contentDescription = if (isVideoModeActive) "Kembali ke Sampul Gambar" else "Putar Video Musik Full",
+                        tint = if (isVideoModeActive) ActiveHeartCoral else Color(0xFF8AB4F8),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (isVideoModeActive) {
+                                "Kembali ke Sampul Gambar (Cover Mode)"
+                            } else {
+                                "Tampilkan Video Musik (Full Player)"
+                            },
+                            fontFamily = PlusJakartaSans,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp,
+                            color = Color.White
+                        )
+                        Text(
+                            text = if (isVideoModeActive) {
+                                "Matikan video dan tampilkan kembali gambar sampul lagu"
+                            } else {
+                                "Konversi & putar otomatis video YouTube penuh di area thumbnail"
+                            },
+                            fontFamily = PlusJakartaSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.5.sp,
+                            color = Color.White.copy(alpha = 0.78f)
+                        )
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // 1. DOWNLOAD MUSIK OFFLINE (dengan bar % di Notifikasi)
@@ -2941,3 +3021,198 @@ private fun extractPlayerAmbientColor(bitmap: Bitmap): Color {
         avgColor
     }
 }
+
+@android.annotation.SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun FullBleedMusicVideoStage(
+    videoId: String,
+    directVideoStreamUrl: String?,
+    isResolvingStream: Boolean,
+    isPlaying: Boolean,
+    currentPositionSec: Float,
+    fallbackCoverReq: ImageRequest,
+    dissolveStrength: Float,
+    modifier: Modifier = Modifier
+) {
+    val cleanVideoId = remember(videoId) {
+        videoId
+            .removePrefix("yt_track_")
+            .removePrefix("yt_vid_")
+            .removePrefix("artist_video_")
+            .substringBefore("_")
+            .trim()
+    }
+
+    Box(
+        modifier = modifier
+            .graphicsLayer {
+                compositingStrategy = CompositingStrategy.Offscreen
+            }
+            .drawWithContent {
+                drawContent()
+                if (dissolveStrength > 0.01f) {
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            0.00f to Color.Black,
+                            0.56f to Color.Black,
+                            0.75f to Color.Black.copy(alpha = 1f - 0.38f * dissolveStrength),
+                            0.89f to Color.Black.copy(alpha = 1f - 0.78f * dissolveStrength),
+                            1.00f to Color.Black.copy(alpha = 1f - 1.00f * dissolveStrength)
+                        ),
+                        blendMode = BlendMode.DstIn
+                    )
+                }
+            }
+    ) {
+        // Backdrop cover while video frame initializes
+        AsyncImage(
+            model = fallbackCoverReq,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        if (!directVideoStreamUrl.isNullOrBlank()) {
+            var isVideoPrepared by remember(directVideoStreamUrl) { mutableStateOf(false) }
+            AndroidView(
+                factory = { ctx ->
+                    android.widget.VideoView(ctx).apply {
+                        layoutParams = android.widget.FrameLayout.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.Gravity.CENTER
+                        )
+                        setVideoURI(android.net.Uri.parse(directVideoStreamUrl))
+                        setOnPreparedListener { mp ->
+                            isVideoPrepared = true
+                            mp.isLooping = true
+                            // Mute video track because high-bitrate audio is already playing via AudioPlayerController
+                            mp.setVolume(0f, 0f)
+                            try {
+                                mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
+                            } catch (_: Exception) {
+                            }
+                            val targetMs = (currentPositionSec * 1000f).toInt().coerceAtLeast(0)
+                            if (targetMs > 1000 && targetMs < mp.duration) {
+                                mp.seekTo(targetMs)
+                            }
+                            if (isPlaying) {
+                                start()
+                            }
+                        }
+                        setOnErrorListener { _, _, _ ->
+                            true
+                        }
+                    }
+                },
+                update = { videoView ->
+                    if (isVideoPrepared) {
+                        if (isPlaying && !videoView.isPlaying) {
+                            videoView.start()
+                        } else if (!isPlaying && videoView.isPlaying) {
+                            videoView.pause()
+                        }
+                        val currentVideoSec = videoView.currentPosition / 1000f
+                        if (kotlin.math.abs(currentVideoSec - currentPositionSec) > 2.8f && currentPositionSec > 0f) {
+                            videoView.seekTo((currentPositionSec * 1000f).toInt())
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        // Scale full-bleed to fill vertical thumbnail stage without black bars
+                        scaleX = 1.75f
+                        scaleY = 1.75f
+                    }
+            )
+        } else if (cleanVideoId.isNotBlank()) {
+            // Instant full-bleed YouTube HTML5 autoplay embed while direct stream resolves or as universal fallback
+            val startSec = currentPositionSec.toInt().coerceAtLeast(0)
+            val embedHtml = remember(cleanVideoId) {
+                """
+                <!DOCTYPE html>
+                <html>
+                <head>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; background: #000; overflow: hidden; }
+                    html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+                    .video-wrap {
+                        position: fixed;
+                        top: 50%; left: 50%;
+                        width: 185vw; height: 185vh;
+                        transform: translate(-50%, -50%);
+                        pointer-events: none;
+                    }
+                    iframe {
+                        width: 100%; height: 100%;
+                        border: 0;
+                        object-fit: cover;
+                    }
+                </style>
+                </head>
+                <body>
+                    <div class="video-wrap">
+                        <iframe src="https://www.youtube.com/embed/$cleanVideoId?autoplay=1&mute=1&controls=0&showinfo=0&rel=0&modestbranding=1&playsinline=1&enablejsapi=1&loop=1&playlist=$cleanVideoId&start=$startSec"
+                            allow="autoplay; encrypted-media" allowfullscreen></iframe>
+                    </div>
+                </body>
+                </html>
+                """.trimIndent()
+            }
+            AndroidView(
+                factory = { ctx ->
+                    android.webkit.WebView(ctx).apply {
+                        setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        settings.javaScriptEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        settings.domStorageEnabled = true
+                        settings.loadWithOverviewMode = true
+                        settings.useWideViewPort = true
+                        isVerticalScrollBarEnabled = false
+                        isHorizontalScrollBarEnabled = false
+                        webChromeClient = android.webkit.WebChromeClient()
+                        webViewClient = android.webkit.WebViewClient()
+                        loadDataWithBaseURL(
+                            "https://www.youtube.com",
+                            embedHtml,
+                            "text/html",
+                            "utf-8",
+                            null
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        if (isResolvingStream && directVideoStreamUrl.isNullOrBlank()) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(bottom = 86.dp, end = 24.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Memuat stream video HD...",
+                        fontFamily = PlusJakartaSans,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.5.sp,
+                        color = Color.White
+                    )
+                }
+            }
+        }
+    }
+}
+

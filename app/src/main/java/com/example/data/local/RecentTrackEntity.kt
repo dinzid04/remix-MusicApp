@@ -10,8 +10,8 @@ data class RecentTrackEntity(
     val videoId: String?,
     val browseId: String?,
     val type: String,
-    val duration: String?,
-    val playedAt: Long = System.currentTimeMillis()
+    val playedAt: Long = System.currentTimeMillis(),
+    val playCount: Int = 1
 ) {
     fun toMusicItem(): MusicItem = MusicItem(
         id = id,
@@ -21,23 +21,20 @@ data class RecentTrackEntity(
         videoId = videoId,
         browseId = browseId,
         type = type,
-        duration = duration
+        playCount = playCount
     )
 
     companion object {
-        fun fromMusicItem(item: MusicItem): RecentTrackEntity {
-            val effectiveId = item.videoId ?: item.browseId ?: item.id
-            return RecentTrackEntity(
-                id = effectiveId,
-                title = item.title,
-                subtitle = item.subtitle,
-                thumbnailUrl = item.highResThumbnail,
-                videoId = item.videoId,
-                browseId = item.browseId,
-                type = item.type,
-                duration = item.duration,
-                playedAt = System.currentTimeMillis()
-            )
-        }
+        fun fromMusicItem(item: MusicItem): RecentTrackEntity = RecentTrackEntity(
+            id = item.videoId ?: item.id,
+            title = item.title,
+            subtitle = item.subtitle,
+            thumbnailUrl = item.thumbnailUrl,
+            videoId = item.videoId ?: item.id,
+            browseId = item.browseId,
+            type = item.type,
+            playedAt = System.currentTimeMillis(),
+            playCount = item.playCount.coerceAtLeast(1)
+        )
     }
 }

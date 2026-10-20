@@ -46,7 +46,7 @@ class MusicDownloadManager(
     private val scraper: YtMusicScraper = YtMusicScraper()
 ) {
     companion object {
-        private const val CHANNEL_ID = "bitchord_download_channel"
+        private const val CHANNEL_ID = "bitchord_download_status_bar_v2"
         private const val NOTIFICATION_ID_BASE = 4200
 
         @Volatile
@@ -85,11 +85,13 @@ class MusicDownloadManager(
             val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Unduhan Musik Offline",
-                NotificationManager.IMPORTANCE_LOW
+                "Unduhan Musik & Playlist Offline",
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Menampilkan bar persentase (%) saat mengunduh lagu atau playlist"
-                setShowBadge(false)
+                description = "Menampilkan bar persentase (%) di status bar atas HP saat mengunduh lagu atau playlist"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(true)
             }
             manager?.createNotificationChannel(channel)
         }
@@ -125,10 +127,18 @@ class MusicDownloadManager(
                 .setContentText(subtitle)
                 .setSubText("$clamped%")
                 .setOnlyAlertOnce(true)
+                .setSilent(true)
                 .setOngoing(!isCompleted)
                 .setAutoCancel(isCompleted)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setProgress(100, clamped, false)
+                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+
+            if (isCompleted) {
+                builder.setProgress(0, 0, false)
+            } else {
+                builder.setProgress(100, clamped, false)
+            }
 
             NotificationManagerCompat.from(appContext).notify(notificationId, builder.build())
         } catch (_: Exception) {

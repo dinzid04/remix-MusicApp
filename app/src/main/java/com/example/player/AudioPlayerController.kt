@@ -257,6 +257,58 @@ class AudioPlayerController(
         }
     }
 
+    fun playNextInQueue(
+        tracks: List<MusicItem>,
+        sourceLabel: String = "Playing next",
+        resolveStream: (suspend (MusicItem) -> AudioStreamInfo?)? = null,
+        onTrackStarted: ((MusicItem) -> Unit)? = null
+    ) {
+        if (tracks.isEmpty()) return
+        if (resolveStream != null) currentStreamResolver = resolveStream
+        if (onTrackStarted != null) currentTrackPlayedCallback = onTrackStarted
+        val st = _playerState.value
+        if (st.currentTrack == null || st.queue.isEmpty()) {
+            startTrackAt(tracks, 0, sourceLabel)
+            return
+        }
+        val currentIdx = st.currentIndex.coerceIn(0, st.queue.lastIndex)
+        val before = st.queue.take(currentIdx + 1)
+        val after = st.queue.drop(currentIdx + 1).filterNot { existing ->
+            tracks.any { it.id == existing.id }
+        }
+        val updatedQueue = before + tracks + after
+        _playerState.update {
+            it.copy(
+                queue = updatedQueue,
+                currentIndex = currentIdx
+            )
+        }
+        notifyPlaybackService()
+    }
+
+    fun addToQueue(
+        tracks: List<MusicItem>,
+        sourceLabel: String = "Added to queue",
+        resolveStream: (suspend (MusicItem) -> AudioStreamInfo?)? = null,
+        onTrackStarted: ((MusicItem) -> Unit)? = null
+    ) {
+        if (tracks.isEmpty()) return
+        if (resolveStream != null) currentStreamResolver = resolveStream
+        if (onTrackStarted != null) currentTrackPlayedCallback = onTrackStarted
+        val st = _playerState.value
+        if (st.currentTrack == null || st.queue.isEmpty()) {
+            startTrackAt(tracks, 0, sourceLabel)
+            return
+        }
+        val existingIds = st.queue.map { it.id }.toSet()
+        val uniqueNew = tracks.filterNot { it.id in existingIds }.ifEmpty { tracks }
+        val updatedQueue = st.queue + uniqueNew
+        _playerState.update {
+            it.copy(queue = updatedQueue)
+        }
+        notifyPlaybackService()
+    }
+
     fun playTrackWithQueue(
         track: MusicItem,
         queue: List<MusicItem>,

@@ -100,6 +100,19 @@ fun BitChordApp(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ -> }
 
+    // Proactively request POST_NOTIFICATIONS permission on Android 13+ so status bar download % works immediately
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
     val ensureNotificationPermissionAndRun: (() -> Unit) -> Unit = remember(context) {
         { action ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -122,8 +135,8 @@ fun BitChordApp(
     val isAccountIntegrationsVisible by homeViewModel.isAccountIntegrationsVisible.collectAsStateWithLifecycle()
     val spotifyAccount by homeViewModel.spotifyAccount.collectAsStateWithLifecycle()
     val youtubeMusicAccount by homeViewModel.youtubeMusicAccount.collectAsStateWithLifecycle()
-    val importedPlaylists by homeViewModel.importedPlaylists.collectAsStateWithLifecycle()
     val isIntegrationSyncing by homeViewModel.isIntegrationSyncing.collectAsStateWithLifecycle()
+    val spotifyImportProgress by homeViewModel.spotifyImportProgress.collectAsStateWithLifecycle()
     val integrationStatusMessage by homeViewModel.integrationStatusMessage.collectAsStateWithLifecycle()
 
     val searchUiState by homeViewModel.searchUiState.collectAsStateWithLifecycle()
@@ -133,6 +146,7 @@ fun BitChordApp(
     val favoriteIds by homeViewModel.favoriteIds.collectAsStateWithLifecycle()
     val favoriteTracks by homeViewModel.favoriteTracks.collectAsStateWithLifecycle()
     val libraryPlaylists by homeViewModel.libraryPlaylists.collectAsStateWithLifecycle()
+    val subscribedArtists by homeViewModel.subscribedArtists.collectAsStateWithLifecycle()
     val savedPlaylistIds by homeViewModel.savedPlaylistIds.collectAsStateWithLifecycle()
     val downloadedTracks by homeViewModel.downloadedTracks.collectAsStateWithLifecycle()
     val downloadedTrackIds by homeViewModel.downloadedTrackIds.collectAsStateWithLifecycle()
@@ -145,6 +159,9 @@ fun BitChordApp(
     val currentLyrics by homeViewModel.currentLyrics.collectAsStateWithLifecycle()
     val selectedLyricsProvider by homeViewModel.selectedLyricsProvider.collectAsStateWithLifecycle()
     val customCoverOverrides by homeViewModel.customCoverOverrides.collectAsStateWithLifecycle()
+    val isVideoModeActive by homeViewModel.isVideoModeActive.collectAsStateWithLifecycle()
+    val activeVideoStreamUrl by homeViewModel.activeVideoStreamUrl.collectAsStateWithLifecycle()
+    val isResolvingVideoStream by homeViewModel.isResolvingVideoStream.collectAsStateWithLifecycle()
     val selectedTabIndex by homeViewModel.selectedTab.collectAsStateWithLifecycle()
     val uiMessage by homeViewModel.uiMessage.collectAsStateWithLifecycle()
 
@@ -163,13 +180,6 @@ fun BitChordApp(
 
     BackHandler(enabled = selectedTab != BitChordTab.HOME && !isPlayerExpanded && !playlistScreenState.isVisible && !artistScreenState.isVisible && !isSettingsVisible && !isAccountIntegrationsVisible) {
         homeViewModel.selectTab(0)
-    }
-
-    val createPlaylistAndAddTrackHelper: (String, PlaylistPrivacy, MusicItem) -> Unit = remember(homeViewModel) {
-        { title, privacy, track ->
-            homeViewModel.createCustomPlaylist(title, privacy)
-            // Also add track after short delay or via repository
-        }
     }
 
     val candidateTracksForAdd = remember(homeState.pintasanCepatItems, homeState.topShelfItems, favoriteTracks) {
@@ -230,6 +240,7 @@ fun BitChordApp(
                     listeningStats = listeningStats,
                     favoriteTracks = favoriteTracks,
                     libraryPlaylists = libraryPlaylists,
+                    subscribedArtists = subscribedArtists,
                     downloadedTracks = downloadedTracks,
                     localDeviceTracks = localDeviceTracks,
                     activeDownloads = activeDownloads,
@@ -253,6 +264,7 @@ fun BitChordApp(
                     onOpenArtistByName = { artistName ->
                         homeViewModel.openArtistProfileByName(artistName)
                     },
+                    onUpdateUsername = homeViewModel::updateUsername,
                     onPlayTopTrack = { topTrack ->
                         homeViewModel.playSingleOrQueueTrack(
                             item = topTrack,
@@ -279,79 +291,7 @@ fun BitChordApp(
             }
         }
 
-        // 2. Playlist / Album Detail Overlay Screen
-        AnimatedVisibility(
-            visible = playlistScreenState.isVisible && playlistScreenState.playlist != null,
-            enter = fadeIn(tween(220)) + slideInHorizontally(
-                animationSpec = tween(260),
-                initialOffsetX = { it / 3 }
-            ),
-            exit = fadeOut(tween(180)) + slideOutHorizontally(
-                animationSpec = tween(220),
-                targetOffsetX = { it / 3 }
-            )
-        ) {
-            val openPlaylistId = playlistScreenState.playlist?.id
-            val isLibraryOwned = openPlaylistId != null && libraryPlaylists.any { it.id == openPlaylistId }
-
-            PlaylistDetailScreen(
-                state = playlistScreenState,
-                currentPlayingTrackId = currentPlayingTrackId,
-                isPlayingAudio = isPlayingAudio,
-                favoriteIds = favoriteIds,
-                downloadedTrackIds = downloadedTrackIds,
-                activeDownloads = activeDownloads,
-                libraryPlaylists = libraryPlaylists,
-                savedPlaylistIds = savedPlaylistIds,
-                onBackClick = homeViewModel::closePlaylistDetail,
-                onPlayAllClick = homeViewModel::onPlayAllFromPlaylist,
-                onShufflePlayClick = homeViewModel::onShufflePlayPlaylist,
-                onToggleSearchClick = homeViewModel::onTogglePlaylistSearch,
-                onSearchQueryChange = homeViewModel::onUpdatePlaylistSearchQuery,
-                onToggleSortClick = homeViewModel::onTogglePlaylistSort,
-                onTrackClick = { clickedTrack, displayedList ->
-                    val plTitle = playlistScreenState.playlist?.title ?: "Playlist"
-                    homeViewModel.playSingleOrQueueTrack(
-                        item = clickedTrack,
-                        contextQueue = displayedList,
-                        sourceLabel = "Playing from $plTitle"
-                    )
-                },
-                onTrackMenuClick = homeViewModel::onOpenTrackMenu,
-                onToggleFavoriteTrack = homeViewModel::toggleFavoriteTrack,
-                onAddTrackToPlaylist = homeViewModel::addTrackToLibraryPlaylist,
-                onCreatePlaylistAndAddTrack = homeViewModel::createCustomPlaylistAndAddTrack,
-                onRemoveTrackFromCurrentPlaylist = if (isLibraryOwned && openPlaylistId != null) {
-                    { trackId -> homeViewModel.removeTrackFromLibraryPlaylist(openPlaylistId, trackId) }
-                } else null,
-                onDownloadSingleTrack = { track ->
-                    ensureNotificationPermissionAndRun {
-                        homeViewModel.downloadSingleTrack(track)
-                    }
-                },
-                onRemoveDownload = homeViewModel::deleteDownloadedTrack,
-                onDownloadWholePlaylist = { detail ->
-                    ensureNotificationPermissionAndRun {
-                        homeViewModel.downloadPlaylistOrAlbum(detail)
-                    }
-                },
-                onToggleSavePlaylistToLibrary = homeViewModel::toggleSavePlaylistDetailToLibrary,
-                onRenamePlaylist = if (isLibraryOwned && openPlaylistId != null) {
-                    { newTitle -> homeViewModel.renameLibraryPlaylist(openPlaylistId, newTitle) }
-                } else null,
-                onTogglePinPlaylist = if (isLibraryOwned && openPlaylistId != null) {
-                    { homeViewModel.togglePinLibraryPlaylist(openPlaylistId) }
-                } else null,
-                onDeletePlaylist = if (isLibraryOwned && openPlaylistId != null) {
-                    { homeViewModel.deleteLibraryPlaylist(openPlaylistId) }
-                } else null,
-                onOpenArtistByName = { artistName ->
-                    homeViewModel.openArtistProfileByName(artistName)
-                }
-            )
-        }
-
-        // 3. Dedicated Artist Profile Screen
+        // 2. Dedicated Artist Profile Screen (rendered before PlaylistDetailScreen so playlists clicked inside ArtistProfile open on top!)
         AnimatedVisibility(
             visible = artistScreenState.isVisible && artistScreenState.artistProfile != null,
             enter = fadeIn(tween(220)) + slideInHorizontally(
@@ -366,7 +306,8 @@ fun BitChordApp(
             val profile = artistScreenState.artistProfile
             if (profile != null) {
                 val isFollowed = artistScreenState.followedArtistIds.contains(profile.id) ||
-                    artistScreenState.followedArtistIds.contains(profile.name)
+                    artistScreenState.followedArtistIds.contains(profile.name) ||
+                    subscribedArtists.any { it.id == profile.id || it.name.equals(profile.name, ignoreCase = true) }
                 ArtistProfileScreen(
                     artistProfile = profile,
                     isLoading = artistScreenState.isLoading,
@@ -396,6 +337,86 @@ fun BitChordApp(
                     onOpenTrackMenu = homeViewModel::onOpenTrackMenu
                 )
             }
+        }
+
+        // 3. Playlist / Album Detail Overlay Screen (rendered above ArtistProfileScreen so clicking Artist Releases / Curated Playlists opens visibly)
+        AnimatedVisibility(
+            visible = playlistScreenState.isVisible && playlistScreenState.playlist != null,
+            enter = fadeIn(tween(220)) + slideInHorizontally(
+                animationSpec = tween(260),
+                initialOffsetX = { it / 3 }
+            ),
+            exit = fadeOut(tween(180)) + slideOutHorizontally(
+                animationSpec = tween(220),
+                targetOffsetX = { it / 3 }
+            )
+        ) {
+            val openPlaylistId = playlistScreenState.playlist?.id
+            val isLibraryOwned = openPlaylistId != null && libraryPlaylists.any { it.id == openPlaylistId }
+
+            PlaylistDetailScreen(
+                state = playlistScreenState,
+                currentPlayingTrackId = currentPlayingTrackId,
+                isPlayingAudio = isPlayingAudio,
+                favoriteIds = favoriteIds,
+                downloadedTrackIds = downloadedTrackIds,
+                activeDownloads = activeDownloads,
+                libraryPlaylists = libraryPlaylists,
+                savedPlaylistIds = savedPlaylistIds,
+                username = listeningStats.userHandle,
+                onBackClick = homeViewModel::closePlaylistDetail,
+                onPlayAllClick = homeViewModel::onPlayAllFromPlaylist,
+                onShufflePlayClick = homeViewModel::onShufflePlayPlaylist,
+                onPlayPlaylistNext = homeViewModel::playPlaylistNext,
+                onAddPlaylistToQueue = homeViewModel::addPlaylistToQueue,
+                onToggleSearchClick = homeViewModel::onTogglePlaylistSearch,
+                onSearchQueryChange = homeViewModel::onUpdatePlaylistSearchQuery,
+                onToggleSortClick = homeViewModel::onTogglePlaylistSort,
+                onTrackClick = { clickedTrack, displayedList ->
+                    val plTitle = playlistScreenState.playlist?.title ?: "Playlist"
+                    homeViewModel.playSingleOrQueueTrack(
+                        item = clickedTrack,
+                        contextQueue = displayedList,
+                        sourceLabel = "Playing from $plTitle"
+                    )
+                },
+                onTrackMenuClick = homeViewModel::onOpenTrackMenu,
+                onToggleFavoriteTrack = homeViewModel::toggleFavoriteTrack,
+                onAddTrackToPlaylist = homeViewModel::addTrackToLibraryPlaylist,
+                onCreatePlaylistAndAddTrack = homeViewModel::createCustomPlaylistAndAddTrack,
+                onRemoveTrackFromCurrentPlaylist = if (isLibraryOwned && openPlaylistId != null) {
+                    { trackId -> homeViewModel.removeTrackFromLibraryPlaylist(openPlaylistId, trackId) }
+                } else null,
+                onReorderPlaylistTracks = { orderedTracks ->
+                    if (openPlaylistId != null) {
+                        homeViewModel.reorderPlaylistTracks(openPlaylistId, orderedTracks)
+                    }
+                },
+                onDownloadSingleTrack = { track ->
+                    ensureNotificationPermissionAndRun {
+                        homeViewModel.downloadSingleTrack(track)
+                    }
+                },
+                onRemoveDownload = homeViewModel::deleteDownloadedTrack,
+                onDownloadWholePlaylist = { detail ->
+                    ensureNotificationPermissionAndRun {
+                        homeViewModel.downloadPlaylistOrAlbum(detail)
+                    }
+                },
+                onToggleSavePlaylistToLibrary = homeViewModel::toggleSavePlaylistDetailToLibrary,
+                onRenamePlaylist = if (isLibraryOwned && openPlaylistId != null) {
+                    { newTitle -> homeViewModel.renameLibraryPlaylist(openPlaylistId, newTitle) }
+                } else null,
+                onTogglePinPlaylist = if (isLibraryOwned && openPlaylistId != null) {
+                    { homeViewModel.togglePinLibraryPlaylist(openPlaylistId) }
+                } else null,
+                onDeletePlaylist = if (isLibraryOwned && openPlaylistId != null) {
+                    { homeViewModel.deleteLibraryPlaylist(openPlaylistId) }
+                } else null,
+                onOpenArtistByName = { artistName ->
+                    homeViewModel.openArtistProfileByName(artistName)
+                }
+            )
         }
 
         // 4. Settings Screen
@@ -437,6 +458,7 @@ fun BitChordApp(
                 spotifyAccount = spotifyAccount,
                 ytMusicAccount = youtubeMusicAccount,
                 isSyncing = isIntegrationSyncing,
+                spotifyImportProgress = spotifyImportProgress,
                 statusMessage = integrationStatusMessage,
                 onBack = homeViewModel::closeAccountIntegrationsScreen,
                 onConnectSpotify = homeViewModel::connectSpotifyAccount,
@@ -580,6 +602,10 @@ fun BitChordApp(
                 activeDownloads = activeDownloads,
                 libraryPlaylists = libraryPlaylists,
                 customCoverOverrides = customCoverOverrides,
+                isVideoModeActive = isVideoModeActive,
+                activeVideoStreamUrl = activeVideoStreamUrl,
+                isResolvingVideoStream = isResolvingVideoStream,
+                onToggleVideoMode = homeViewModel::toggleVideoPlayerMode,
                 onClosePlayer = homeViewModel::closeFullPlayer,
                 onChangeSubView = homeViewModel::setPlayerSubView,
                 onSelectLyricsProvider = homeViewModel::selectLyricsProvider,
@@ -646,6 +672,10 @@ private fun IsolatedFullMusicPlayerHost(
     activeDownloads: Map<String, ActiveDownloadProgress>,
     libraryPlaylists: List<UserLibraryPlaylist>,
     customCoverOverrides: Map<String, String>,
+    isVideoModeActive: Boolean,
+    activeVideoStreamUrl: String?,
+    isResolvingVideoStream: Boolean,
+    onToggleVideoMode: () -> Unit,
     onClosePlayer: () -> Unit,
     onChangeSubView: (PlayerSubView) -> Unit,
     onSelectLyricsProvider: (LyricsProvider) -> Unit,
@@ -686,6 +716,10 @@ private fun IsolatedFullMusicPlayerHost(
         isDownloaded = isDownloaded,
         activeDownloadProgress = activeDl,
         libraryPlaylists = libraryPlaylists,
+        isVideoModeActive = isVideoModeActive,
+        activeVideoStreamUrl = activeVideoStreamUrl,
+        isResolvingVideoStream = isResolvingVideoStream,
+        onToggleVideoMode = onToggleVideoMode,
         onClosePlayer = onClosePlayer,
         onChangeSubView = onChangeSubView,
         onSelectLyricsProvider = onSelectLyricsProvider,

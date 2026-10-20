@@ -1670,6 +1670,77 @@ class YtMusicScraper {
         )
     }
 
+    /**
+     * Resolves a direct muxed MP4 video stream URL (itag 18 / 22) for YouTube Music Video mode in the player.
+     */
+    suspend fun getVideoStreamUrl(item: MusicItem): String? = withContext(Dispatchers.IO) {
+        val targetVideoId = resolveTrueVideoId(item) ?: return@withContext null
+        val cfg = getInnertubeConfig()
+
+        try {
+            val bodyJson = JSONObject().apply {
+                put(
+                    "context",
+                    JSONObject().put(
+                        "client",
+                        JSONObject().apply {
+                            put("clientName", "ANDROID_VR")
+                            put("clientVersion", "1.60.19")
+                            put("deviceMake", "Oculus")
+                            put("deviceModel", "Quest 3")
+                            put("osName", "Android")
+                            put("osVersion", "12L")
+                            put("androidSdkVersion", 32)
+                            if (!cfg.visitorData.isNullOrBlank()) {
+                                put("visitorData", cfg.visitorData)
+                            }
+                            put("hl", "en")
+                            put("gl", "US")
+                        }
+                    )
+                )
+                put("videoId", targetVideoId)
+            }
+
+            val req = Request.Builder()
+                .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip")
+                .post(bodyJson.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            httpClient.newCall(req).execute().use { res ->
+                if (res.isSuccessful) {
+                    val data = JSONObject(res.body?.string().orEmpty())
+                    val formats = data.optJSONObject("streamingData")?.optJSONArray("formats")
+                    if (formats != null) {
+                        for (i in 0 until formats.length()) {
+                            val f = formats.optJSONObject(i) ?: continue
+                            val url = f.optString("url")
+                            val mime = f.optString("mimeType")
+                            if (url.isNotBlank() && mime.contains("video/mp4")) {
+                                return@withContext url
+                            }
+                        }
+                    }
+                    val adaptive = data.optJSONObject("streamingData")?.optJSONArray("adaptiveFormats")
+                    if (adaptive != null) {
+                        for (i in 0 until adaptive.length()) {
+                            val f = adaptive.optJSONObject(i) ?: continue
+                            val url = f.optString("url")
+                            val mime = f.optString("mimeType")
+                            if (url.isNotBlank() && mime.contains("video/mp4")) {
+                                return@withContext url
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+        null
+    }
+
     private fun joinRunsText(runs: JSONArray?): String? {
         if (runs == null || runs.length() == 0) return null
         val sb = StringBuilder()
@@ -1729,7 +1800,7 @@ class YtMusicScraper {
             }
             val videosDeferred = async {
                 try {
-                    searchByFilter("$cleanArtistName official video", filter = "videos", hl = hl, gl = gl)
+                    searchByFilter("$cleanArtistName official music video", filter = "videos", hl = hl, gl = gl)
                 } catch (_: Exception) {
                     emptyList()
                 }
@@ -1888,17 +1959,6 @@ class YtMusicScraper {
             }).distinctBy { it.title.lowercase() }
                 .ifEmpty { fallbackProfile.singlesAndEps }
 
-            val videos = videosDeferred.await().take(10).ifEmpty { fallbackProfile.videos }
-            val featuredPlaylists = playlistsDeferred.await().take(10).ifEmpty { fallbackProfile.featuredPlaylists }
-
-            val otherSearchedArtists = searchedArtists
-                .filterNot { it.title.equals(cleanArtistName, ignoreCase = true) }
-
-            val relatedArtists = (channelRelatedArtists + otherSearchedArtists + fallbackProfile.relatedArtists)
-                .filterNot { it.title.equals(cleanArtistName, ignoreCase = true) }
-                .distinctBy { it.title.lowercase() }
-                .take(10)
-
             val bestAvatar = MusicItem.upgradeThumbnailUrl(
                 headerThumb
                     ?: primaryArtistMatch?.thumbnailUrl?.takeIf { it.isNotBlank() }
@@ -1908,6 +1968,50 @@ class YtMusicScraper {
                 null,
                 MusicItem.Quality.ULTRA
             )
+
+            // Guarantee every video item has a valid YouTube video thumbnail & videoId!
+            val rawVideos = videosDeferred.await().take(10).ifEmpty { fallbackProfile.videos }
+            val videos = rawVideos.mapIndexed { idx, v ->
+                val vid = v.videoId?.takeIf { it.isNotBlank() }
+                    ?: topSongs.getOrNull(idx % topSongs.size)?.videoId
+                    ?: "7PCkvCPvDXk"
+                val guaranteedThumb = when {
+                    v.thumbnailUrl.isNotBlank() -> MusicItem.upgradeThumbnailUrl(v.thumbnailUrl, vid, MusicItem.Quality.HIGH)
+                    vid.isNotBlank() -> "https://i.ytimg.com/vi/$vid/hqdefault.jpg"
+                    else -> bestAvatar
+                }
+                v.copy(
+                    videoId = vid,
+                    thumbnailUrl = guaranteedThumb,
+                    type = "video"
+                )
+            }
+
+            // Guarantee every featured playlist ("Menampilkan [Artis]") has previewTracks & valid browseId so clicking it ALWAYS opens PlaylistDetailScreen with songs!
+            val rawPlaylists = playlistsDeferred.await().take(10).ifEmpty { fallbackProfile.featuredPlaylists }
+            val featuredPlaylists = rawPlaylists.mapIndexed { idx, pl ->
+                val normBrowse = pl.browseId?.takeIf { it.isNotBlank() }?.let {
+                    if (it.startsWith("PL")) "VL$it" else it
+                } ?: pl.id.ifBlank { "feat_pl_${idx}_${cleanArtistName.lowercase()}" }
+                val plThumb = pl.thumbnailUrl.ifBlank {
+                    topSongs.getOrNull(idx % topSongs.size)?.highResThumbnail ?: bestAvatar
+                }
+                pl.copy(
+                    id = normBrowse,
+                    browseId = normBrowse,
+                    type = "playlist",
+                    thumbnailUrl = plThumb,
+                    previewTracks = pl.previewTracks.ifEmpty { topSongs }
+                )
+            }
+
+            val otherSearchedArtists = searchedArtists
+                .filterNot { it.title.equals(cleanArtistName, ignoreCase = true) }
+
+            val relatedArtists = (channelRelatedArtists + otherSearchedArtists + fallbackProfile.relatedArtists)
+                .filterNot { it.title.equals(cleanArtistName, ignoreCase = true) }
+                .distinctBy { it.title.lowercase() }
+                .take(10)
 
             val subLabel = subscribersText?.takeIf { it.isNotBlank() }
                 ?: primaryArtistMatch?.subtitle?.substringAfter("•", "")?.trim()?.takeIf { it.isNotBlank() }

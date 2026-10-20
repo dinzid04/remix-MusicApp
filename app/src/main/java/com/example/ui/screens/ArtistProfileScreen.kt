@@ -30,8 +30,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -42,6 +40,7 @@ import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
@@ -53,6 +52,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -166,15 +166,14 @@ fun ArtistProfileScreen(
                 )
             }
 
-            // 2. Highlight Rilis Terbaru (Featured Latest Release Spotlight with Vinyl Accent)
+            // 2. Highlight Rilis Terbaru
             artistProfile.latestRelease?.let { latest ->
                 item(key = "artist_latest_release_spotlight") {
                     LatestReleaseSpotlightCard(
                         release = latest,
                         artistName = artistProfile.name,
                         accentColor = dynamicAccent,
-                        onOpenDetail = { onOpenReleaseOrPlaylist(latest) },
-                        onPlayNow = { onPlayReleaseDirect(latest) }
+                        onOpenDetail = { onOpenReleaseOrPlaylist(latest) }
                     )
                 }
             }
@@ -297,7 +296,7 @@ fun ArtistProfileScreen(
                 }
             }
 
-            // 4. Variasi Diskografi (Album & Single/EP dengan Filter Tab & Varied Cards)
+            // 4. Album & Single — Full-bleed image cards with seamless blurred opacity overlay & no Play button
             if (artistProfile.albums.isNotEmpty() || artistProfile.singlesAndEps.isNotEmpty()) {
                 item(key = "artist_discography_section") {
                     ArtistDiscographySection(
@@ -306,17 +305,17 @@ fun ArtistProfileScreen(
                         selectedTab = selectedReleaseTab,
                         accentColor = dynamicAccent,
                         onSelectTab = { selectedReleaseTab = it },
-                        onOpenRelease = onOpenReleaseOrPlaylist,
-                        onPlayRelease = onPlayReleaseDirect
+                        onOpenRelease = onOpenReleaseOrPlaylist
                     )
                 }
             }
 
-            // 5. Video Musik (16:9 Widescreen Cards)
+            // 5. Video Musik (16:9 Widescreen Cards with guaranteed valid YouTube thumbnails)
             if (artistProfile.videos.isNotEmpty()) {
                 item(key = "artist_videos_section") {
                     ArtistVideosSection(
                         videos = artistProfile.videos,
+                        fallbackArtistImage = artistProfile.headerImageUrl.ifBlank { artistProfile.avatarUrl },
                         accentColor = dynamicAccent,
                         onVideoClick = { video ->
                             onPlayTrack(video, artistProfile.videos, "Video • ${artistProfile.name}")
@@ -325,20 +324,26 @@ fun ArtistProfileScreen(
                 }
             }
 
-            // 6. Menampilkan Artis / Playlist Pilihan (Featured Playlists)
+            // 6. Menampilkan Artis / Playlist Kurasi & Radio Terbaik
             if (artistProfile.featuredPlaylists.isNotEmpty()) {
                 item(key = "artist_featured_playlists_section") {
                     ArtistFeaturedPlaylistsSection(
                         artistName = artistProfile.name,
                         playlists = artistProfile.featuredPlaylists,
                         accentColor = dynamicAccent,
-                        onPlaylistClick = onOpenReleaseOrPlaylist,
-                        onPlayPlaylist = onPlayReleaseDirect
+                        onPlaylistClick = { playlist ->
+                            val enriched = if (playlist.previewTracks.isEmpty() && artistProfile.topSongs.isNotEmpty()) {
+                                playlist.copy(previewTracks = artistProfile.topSongs)
+                            } else {
+                                playlist
+                            }
+                            onOpenReleaseOrPlaylist(enriched)
+                        }
                     )
                 }
             }
 
-            // 7. "Penggemar mungkin juga suka" — Strictly Circular Artist Avatars!
+            // 7. "Penggemar mungkin juga suka" — Strictly Circular Artist Avatars
             if (artistProfile.relatedArtists.isNotEmpty()) {
                 item(key = "artist_fans_also_like_section") {
                     FansMightAlsoLikeCircularSection(
@@ -349,7 +354,7 @@ fun ArtistProfileScreen(
                 }
             }
 
-            // 8. Tentang Artis (About / Bio Card)
+            // 8. Tentang Artis — Handcrafted Full-Stack Editorial Section (No Boxed Overlay Slop)
             if (!artistProfile.description.isNullOrBlank()) {
                 item(key = "artist_about_card") {
                     ArtistAboutBioSection(
@@ -379,7 +384,6 @@ private fun ArtistHeroHeaderSection(
             .fillMaxWidth()
             .background(OledBlack)
     ) {
-        // Full-bleed artist hero image with dynamic color atmospheric gradient
         AsyncImage(
             model = artist.headerImageUrl.ifBlank { artist.avatarUrl },
             contentDescription = artist.name,
@@ -389,7 +393,6 @@ private fun ArtistHeroHeaderSection(
                 .height(390.dp)
         )
 
-        // Multi-stop dynamic color & OLED black gradient overlay
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -410,7 +413,6 @@ private fun ArtistHeroHeaderSection(
                 .windowInsetsPadding(WindowInsets.statusBars)
                 .padding(horizontal = 20.dp, vertical = 12.dp)
         ) {
-            // Top bar: Back button + Verified Artist pill
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -474,13 +476,12 @@ private fun ArtistHeroHeaderSection(
 
             Spacer(modifier = Modifier.height(110.dp))
 
-            // Artist avatar + Name + Subscribers & Monthly Listeners
             Row(
                 verticalAlignment = Alignment.Bottom,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 AsyncImage(
-                    model = artist.avatarUrl,
+                    model = artist.avatarUrl.ifBlank { artist.headerImageUrl },
                     contentDescription = artist.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -520,7 +521,6 @@ private fun ArtistHeroHeaderSection(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Action Controls Bar: Subscribe/Follow + Radio + Shuffle + Primary Play Button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -530,7 +530,6 @@ private fun ArtistHeroHeaderSection(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Subscribe / Ikuti Button
                     Surface(
                         shape = RoundedCornerShape(50),
                         color = if (isFollowing) dynamicAccent.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.12f),
@@ -565,7 +564,6 @@ private fun ArtistHeroHeaderSection(
                         }
                     }
 
-                    // Radio Button
                     Surface(
                         shape = RoundedCornerShape(50),
                         color = Color.White.copy(alpha = 0.10f),
@@ -645,55 +643,63 @@ private fun LatestReleaseSpotlightCard(
     release: MusicItem,
     artistName: String,
     accentColor: Color,
-    onOpenDetail: () -> Unit,
-    onPlayNow: () -> Unit
+    onOpenDetail: () -> Unit
 ) {
-    Surface(
-        shape = RoundedCornerShape(22.dp),
-        color = SurfaceDark,
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 8.dp)
-            .border(1.dp, accentColor.copy(alpha = 0.42f), RoundedCornerShape(22.dp))
             .clip(RoundedCornerShape(22.dp))
+            .background(SurfaceDark)
             .clickable(onClick = onOpenDetail)
             .testTag("artist_latest_release_card")
     ) {
-        Row(
+        // Soft ambient blurred background from release cover
+        AsyncImage(
+            model = release.highResThumbnail,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
             modifier = Modifier
-                .fillMaxWidth()
+                .matchParentSize()
+                .blur(28.dp)
+        )
+        Box(
+            modifier = Modifier
+                .matchParentSize()
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            accentColor.copy(alpha = 0.24f),
-                            SurfaceDark,
-                            Color(0xFF121216)
+                            OledBlack.copy(alpha = 0.72f),
+                            OledBlack.copy(alpha = 0.86f),
+                            OledBlack.copy(alpha = 0.94f)
                         )
                     )
                 )
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Cover Sleeve + Vinyl Disc Peek
             Box(
                 modifier = Modifier
-                    .width(106.dp)
-                    .height(88.dp),
+                    .width(104.dp)
+                    .height(86.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
-                // Vinyl Disc peeking on the right
                 Box(
                     modifier = Modifier
-                        .size(76.dp)
-                        .offset(x = 26.dp)
+                        .size(74.dp)
+                        .offset(x = 24.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF0E0E12))
-                        .border(2.dp, Color.White.copy(alpha = 0.15f), CircleShape),
+                        .background(Color(0xFF0E0E12)),
                     contentAlignment = Alignment.Center
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(24.dp)
+                            .size(22.dp)
                             .clip(CircleShape)
                             .background(accentColor)
                     )
@@ -704,7 +710,7 @@ private fun LatestReleaseSpotlightCard(
                     contentDescription = release.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
-                        .size(86.dp)
+                        .size(84.dp)
                         .shadow(10.dp, RoundedCornerShape(14.dp))
                         .clip(RoundedCornerShape(14.dp))
                         .background(CardPlaceholderDark)
@@ -714,22 +720,16 @@ private fun LatestReleaseSpotlightCard(
             Spacer(modifier = Modifier.width(14.dp))
 
             Column(modifier = Modifier.weight(1f)) {
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = accentColor.copy(alpha = 0.25f)
-                ) {
-                    Text(
-                        text = "RILIS TERBARU",
-                        fontFamily = PlusJakartaSans,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 10.sp,
-                        letterSpacing = 0.7.sp,
-                        color = TextPrimaryWhite,
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
-                    )
-                }
+                Text(
+                    text = "RILIS TERBARU",
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 10.sp,
+                    letterSpacing = 0.8.sp,
+                    color = accentColor
+                )
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
 
                 Text(
                     text = release.title,
@@ -751,24 +751,6 @@ private fun LatestReleaseSpotlightCard(
                     color = TextSecondaryGrey,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            Spacer(modifier = Modifier.width(10.dp))
-
-            IconButton(
-                onClick = onPlayNow,
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(accentColor)
-                    .testTag("latest_release_play_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = "Putar Rilis Terbaru",
-                    tint = TextPrimaryWhite,
-                    modifier = Modifier.size(24.dp)
                 )
             }
         }
@@ -881,8 +863,7 @@ private fun ArtistDiscographySection(
     selectedTab: ArtistReleaseTab,
     accentColor: Color,
     onSelectTab: (ArtistReleaseTab) -> Unit,
-    onOpenRelease: (MusicItem) -> Unit,
-    onPlayRelease: (MusicItem) -> Unit
+    onOpenRelease: (MusicItem) -> Unit
 ) {
     val displayedReleases = remember(albums, singlesAndEps, selectedTab) {
         when (selectedTab) {
@@ -914,7 +895,7 @@ private fun ArtistDiscographySection(
                     color = TextPrimaryWhite
                 )
                 Text(
-                    text = "Diskografi resmi dengan variasi tata letak rilisan",
+                    text = "Diskografi resmi dengan rilisan pilihan",
                     fontFamily = PlusJakartaSans,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 12.5.sp,
@@ -925,7 +906,6 @@ private fun ArtistDiscographySection(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Filter Tabs: Semua, Album, Single & EP
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -938,11 +918,6 @@ private fun ArtistDiscographySection(
                     shape = RoundedCornerShape(50),
                     color = if (isSelected) accentColor else Color(0xFF1A1A20),
                     modifier = Modifier
-                        .border(
-                            width = 1.dp,
-                            color = if (isSelected) accentColor else Color(0xFF2E2E38),
-                            shape = RoundedCornerShape(50)
-                        )
                         .clip(RoundedCornerShape(50))
                         .clickable { onSelectTab(tab) }
                         .testTag("artist_release_tab_${tab.name.lowercase()}")
@@ -961,219 +936,102 @@ private fun ArtistDiscographySection(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Varied Release Cards Carousel (Wide Vinyl Sleeve Card + Editorial Discography Cards)
         LazyRow(
             contentPadding = PaddingValues(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             itemsIndexed(
                 items = displayedReleases,
                 key = { idx, item -> "discog_${item.id}_$idx" }
             ) { index, release ->
-                if (index == 0) {
-                    FeaturedWideDiscographyCard(
-                        release = release,
-                        accentColor = accentColor,
-                        onClick = { onOpenRelease(release) },
-                        onPlayClick = { onPlayRelease(release) }
-                    )
-                } else {
-                    EditorialVinylReleaseCard(
-                        release = release,
-                        accentColor = accentColor,
-                        onClick = { onOpenRelease(release) },
-                        onPlayClick = { onPlayRelease(release) }
-                    )
-                }
+                FullBleedSeamlessDiscographyCard(
+                    release = release,
+                    isFeaturedWide = index == 0,
+                    onClick = { onOpenRelease(release) }
+                )
             }
         }
     }
 }
 
+/**
+ * Full-bleed cover card where the artwork fills the entire card and seamlessly melts
+ * into a soft blurred/opacity gradient at the bottom without any hard border lines or play button.
+ */
 @Composable
-private fun FeaturedWideDiscographyCard(
+private fun FullBleedSeamlessDiscographyCard(
     release: MusicItem,
-    accentColor: Color,
-    onClick: () -> Unit,
-    onPlayClick: () -> Unit
+    isFeaturedWide: Boolean,
+    onClick: () -> Unit
 ) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0xFF17171D),
+    val cardWidth = if (isFeaturedWide) 224.dp else 168.dp
+    val cardHeight = 224.dp
+
+    Box(
         modifier = Modifier
-            .width(268.dp)
-            .border(1.dp, accentColor.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
+            .width(cardWidth)
+            .height(cardHeight)
             .clip(RoundedCornerShape(20.dp))
+            .background(CardPlaceholderDark)
             .clickable(onClick = onClick)
+            .testTag("artist_discography_card_${release.id}")
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(148.dp)
-                    .clip(RoundedCornerShape(14.dp))
-            ) {
-                AsyncImage(
-                    model = release.highResThumbnail,
-                    contentDescription = release.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(CardPlaceholderDark)
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    OledBlack.copy(alpha = 0.78f)
-                                )
-                            )
-                        )
-                )
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = OledBlack.copy(alpha = 0.72f),
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Album,
-                            contentDescription = null,
-                            tint = accentColor,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (release.subtitle.contains("single", ignoreCase = true)) "SINGLE PILIHAN" else "ALBUM UNGGULAN",
-                            fontFamily = PlusJakartaSans,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 10.sp,
-                            color = TextPrimaryWhite
-                        )
-                    }
-                }
+        // 1. Ambient blurred background layer for seamless bottom blend
+        AsyncImage(
+            model = release.highResThumbnail,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxSize()
+                .blur(22.dp)
+        )
 
-                IconButton(
-                    onClick = onPlayClick,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(10.dp)
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(accentColor)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = "Putar ${release.title}",
-                        tint = TextPrimaryWhite,
-                        modifier = Modifier.size(22.dp)
+        // 2. Crisp full-bleed artwork filling the box
+        AsyncImage(
+            model = release.highResThumbnail,
+            contentDescription = release.title,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // 3. Seamless multi-stop opacity gradient (no border line, blends smoothly into bottom)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to Color.Transparent,
+                        0.42f to Color.Transparent,
+                        0.68f to OledBlack.copy(alpha = 0.52f),
+                        0.86f to OledBlack.copy(alpha = 0.84f),
+                        1.0f to OledBlack.copy(alpha = 0.96f)
                     )
-                }
-            }
+                )
+        )
 
-            Spacer(modifier = Modifier.height(10.dp))
-
+        // 4. Clean title & subtitle anchored at the bottom (no play button overlay)
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 14.dp)
+        ) {
             Text(
                 text = release.title,
                 fontFamily = PlusJakartaSans,
                 fontWeight = FontWeight.ExtraBold,
-                fontSize = 16.sp,
+                fontSize = 15.5.sp,
                 color = TextPrimaryWhite,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = release.subtitle,
-                fontFamily = PlusJakartaSans,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 12.5.sp,
-                color = TextSecondaryGrey,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
-private fun EditorialVinylReleaseCard(
-    release: MusicItem,
-    accentColor: Color,
-    onClick: () -> Unit,
-    onPlayClick: () -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0xFF15151A),
-        modifier = Modifier
-            .width(172.dp)
-            .border(1.dp, Color(0xFF282832), RoundedCornerShape(20.dp))
-            .clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = onClick)
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(148.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                AsyncImage(
-                    model = release.highResThumbnail,
-                    contentDescription = release.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(CardPlaceholderDark)
-                )
-
-                IconButton(
-                    onClick = onPlayClick,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp)
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(OledBlack.copy(alpha = 0.78f))
-                        .border(1.dp, accentColor.copy(alpha = 0.6f), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = "Putar ${release.title}",
-                        tint = TextPrimaryWhite,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Text(
-                text = release.title,
-                fontFamily = PlusJakartaSans,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 15.sp,
-                color = TextPrimaryWhite,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = release.subtitle,
+                text = release.subtitle.ifBlank { "Album" },
                 fontFamily = PlusJakartaSans,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 12.sp,
-                color = TextSecondaryGrey,
+                color = Color.White.copy(alpha = 0.76f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1184,6 +1042,7 @@ private fun EditorialVinylReleaseCard(
 @Composable
 private fun ArtistVideosSection(
     videos: List<MusicItem>,
+    fallbackArtistImage: String,
     accentColor: Color,
     onVideoClick: (MusicItem) -> Unit
 ) {
@@ -1202,7 +1061,7 @@ private fun ArtistVideosSection(
                 color = TextPrimaryWhite
             )
             Text(
-                text = "Video musik resmi & penampilan langsung",
+                text = "Ketuk untuk memutar • Ubah ke Mode Video di titik 3 (⋮) pemutar",
                 fontFamily = PlusJakartaSans,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 12.5.sp,
@@ -1217,41 +1076,49 @@ private fun ArtistVideosSection(
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             items(videos, key = { "vid_${it.id}" }) { video ->
+                val rawVidId = (video.videoId ?: video.id).removePrefix("vid_")
+                val effectiveThumb = when {
+                    video.thumbnailUrl.isNotBlank() -> video.highResThumbnail
+                    rawVidId.length == 11 -> "https://i.ytimg.com/vi/$rawVidId/hqdefault.jpg"
+                    else -> fallbackArtistImage
+                }
                 Column(
                     modifier = Modifier
                         .width(236.dp)
                         .clip(RoundedCornerShape(16.dp))
-                        .clickable { onVideoClick(video) }
+                        .clickable {
+                            onVideoClick(
+                                if (video.thumbnailUrl.isBlank()) video.copy(thumbnailUrl = effectiveThumb)
+                                else video
+                            )
+                        }
+                        .testTag("artist_video_card_${video.id}")
                 ) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(132.dp)
+                            .height(134.dp)
                             .clip(RoundedCornerShape(16.dp))
                             .background(CardPlaceholderDark)
                     ) {
                         AsyncImage(
-                            model = video.highResThumbnail,
+                            model = effectiveThumb,
                             contentDescription = video.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
                         )
                         Box(
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(OledBlack.copy(alpha = 0.72f))
-                                .border(1.dp, accentColor, CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                tint = TextPrimaryWhite,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            Color.Transparent,
+                                            OledBlack.copy(alpha = 0.65f)
+                                        )
+                                    )
+                                )
+                        )
                         video.duration?.takeIf { it.isNotBlank() }?.let { dur ->
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
@@ -1301,8 +1168,7 @@ private fun ArtistFeaturedPlaylistsSection(
     artistName: String,
     playlists: List<MusicItem>,
     accentColor: Color,
-    onPlaylistClick: (MusicItem) -> Unit,
-    onPlayPlaylist: (MusicItem) -> Unit
+    onPlaylistClick: (MusicItem) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -1334,50 +1200,58 @@ private fun ArtistFeaturedPlaylistsSection(
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             items(playlists, key = { "feat_pl_${it.id}" }) { playlist ->
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = Color(0xFF16161C),
+                Box(
                     modifier = Modifier
-                        .width(240.dp)
-                        .border(1.dp, Color(0xFF292934), RoundedCornerShape(18.dp))
+                        .width(172.dp)
+                        .height(216.dp)
                         .clip(RoundedCornerShape(18.dp))
+                        .background(CardPlaceholderDark)
                         .clickable { onPlaylistClick(playlist) }
+                        .testTag("artist_featured_playlist_${playlist.id}")
                 ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    AsyncImage(
+                        model = playlist.highResThumbnail,
+                        contentDescription = playlist.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    0.0f to Color.Transparent,
+                                    0.45f to Color.Transparent,
+                                    0.75f to OledBlack.copy(alpha = 0.68f),
+                                    1.0f to OledBlack.copy(alpha = 0.95f)
+                                )
+                            )
+                    )
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .padding(14.dp)
                     ) {
-                        AsyncImage(
-                            model = playlist.smallThumbnail,
-                            contentDescription = playlist.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(64.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(CardPlaceholderDark)
+                        Text(
+                            text = playlist.title,
+                            fontFamily = PlusJakartaSans,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 14.5.sp,
+                            color = TextPrimaryWhite,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = playlist.title,
-                                fontFamily = PlusJakartaSans,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 14.5.sp,
-                                color = TextPrimaryWhite,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text(
-                                text = playlist.subtitle,
-                                fontFamily = PlusJakartaSans,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 11.5.sp,
-                                color = accentColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = playlist.subtitle.ifBlank { "Playlist Kurasi" },
+                            fontFamily = PlusJakartaSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.5.sp,
+                            color = accentColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
@@ -1385,10 +1259,6 @@ private fun ArtistFeaturedPlaylistsSection(
     }
 }
 
-/**
- * "Penggemar mungkin juga suka" — Strictly Circular (`CircleShape`) Artist Avatars
- * as explicitly requested by the user ("itu image nya bulat ya bukan kotak!").
- */
 @Composable
 private fun FansMightAlsoLikeCircularSection(
     relatedArtists: List<MusicItem>,
@@ -1447,7 +1317,6 @@ private fun FansMightAlsoLikeCircularSection(
                             .size(112.dp)
                             .shadow(10.dp, CircleShape)
                             .clip(CircleShape)
-                            .border(2.dp, accentColor.copy(alpha = 0.55f), CircleShape)
                             .background(CardPlaceholderDark),
                         contentAlignment = Alignment.Center
                     ) {
@@ -1492,6 +1361,10 @@ private fun FansMightAlsoLikeCircularSection(
     }
 }
 
+/**
+ * Clean, human-crafted editorial biography section directly integrated with the page canvas
+ * without artificial boxed borders or heavy overlay cards.
+ */
 @Composable
 private fun ArtistAboutBioSection(
     artist: ArtistProfileDetail,
@@ -1499,46 +1372,91 @@ private fun ArtistAboutBioSection(
 ) {
     var expanded by remember { mutableStateOf(false) }
 
-    Surface(
-        shape = RoundedCornerShape(22.dp),
-        color = Color(0xFF15151B),
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 26.dp)
-            .border(1.dp, Color(0xFF282834), RoundedCornerShape(22.dp))
-            .clip(RoundedCornerShape(22.dp))
+            .padding(horizontal = 20.dp, vertical = 28.dp)
             .clickable { expanded = !expanded }
+            .testTag("artist_about_section")
     ) {
-        Column(modifier = Modifier.padding(18.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        HorizontalDivider(
+            color = Color.White.copy(alpha = 0.08f),
+            thickness = 1.dp,
+            modifier = Modifier.padding(bottom = 22.dp)
+        )
+
+        Text(
+            text = "Tentang ${artist.name}",
+            fontFamily = PlusJakartaSans,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 22.sp,
+            letterSpacing = (-0.5).sp,
+            color = TextPrimaryWhite
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(28.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
                 Text(
-                    text = "Tentang ${artist.name}",
+                    text = artist.monthlyListenersText.substringBefore(" ").ifBlank { "2.4M" },
                     fontFamily = PlusJakartaSans,
                     fontWeight = FontWeight.ExtraBold,
-                    fontSize = 18.sp,
+                    fontSize = 20.sp,
                     color = TextPrimaryWhite
                 )
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = accentColor
+                Text(
+                    text = "Pendengar Bulanan",
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = TextSecondaryGrey
                 )
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = artist.description.orEmpty(),
-                fontFamily = PlusJakartaSans,
-                fontWeight = FontWeight.Medium,
-                fontSize = 13.5.sp,
-                lineHeight = 20.sp,
-                color = TextSecondaryGrey,
-                maxLines = if (expanded) 20 else 3,
-                overflow = TextOverflow.Ellipsis
-            )
+
+            Column {
+                Text(
+                    text = artist.subscribersText.substringBefore(" ").ifBlank { "1.8M" },
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 20.sp,
+                    color = TextPrimaryWhite
+                )
+                Text(
+                    text = "Pelanggan Resmi",
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = TextSecondaryGrey
+                )
+            }
         }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        Text(
+            text = artist.description.orEmpty(),
+            fontFamily = PlusJakartaSans,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 14.5.sp,
+            lineHeight = 22.sp,
+            color = Color(0xFFD0D0D8),
+            maxLines = if (expanded) 30 else 4,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = if (expanded) "Tampilkan lebih sedikit" else "Baca selengkapnya",
+            fontFamily = PlusJakartaSans,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 13.sp,
+            color = accentColor
+        )
     }
 }

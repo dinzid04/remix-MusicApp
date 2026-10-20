@@ -920,19 +920,19 @@ object CuratedHomeFallback {
 
     fun getPlaylistFallback(seedItem: MusicItem): PlaylistDetail {
         val tracks = if (seedItem.previewTracks.isNotEmpty()) {
-            (seedItem.previewTracks + getQuickPicksFallback()).distinctBy { it.title.lowercase() }
+            seedItem.previewTracks
         } else {
             getQuickPicksFallback()
         }
         val isAlbum = seedItem.type == "album" || seedItem.browseId?.startsWith("MPREb_") == true
         val author = seedItem.subtitle
             .replace("•", ",")
-            .ifBlank { "Qiaa, ${tracks.size} lagu" }
+            .ifBlank { "user, ${tracks.size} lagu" }
         val kindLabel = if (isAlbum) "ALBUM" else "PLAYLIST"
 
         return PlaylistDetail(
             browseId = seedItem.browseId ?: seedItem.id,
-            title = seedItem.title.ifBlank { "GALAUUUUUUUUU BGTTT BGSTTTTT" },
+            title = seedItem.title.ifBlank { "Playlist Pilihan" },
             authorSubtitle = if (author.contains("lagu", ignoreCase = true)) author else "$author, ${tracks.size} lagu",
             metaSubtitle = "$kindLabel • ${tracks.size} TRACKS",
             description = null,
@@ -942,20 +942,34 @@ object CuratedHomeFallback {
         )
     }
 
+    fun getArtistAvatarForName(artistName: String, fallbackUrl: String = ""): String {
+        val low = artistName.trim().lowercase()
+        return when {
+            low.contains("tulus") -> "https://lrc.red/s/FRX282637095.webp"
+            low.contains("rossa") -> "https://lrc.red/s/IDA170321018.webp"
+            low.contains("nadin") -> "https://i.ytimg.com/vi/kOkQ4T5WO9E/hqdefault.jpg"
+            low.contains("bernadya") -> "https://i.ytimg.com/vi/60ItHLz5WEA/hqdefault.jpg"
+            low.contains("mahalini") -> "https://i.ytimg.com/vi/fRh_vgS2dFE/hqdefault.jpg"
+            low.contains("sal priadi") -> "https://i.ytimg.com/vi/nfWlot6h_JM/hqdefault.jpg"
+            low.contains("daun jatuh") -> "https://i.ytimg.com/vi/5F28ye50-Kc/hqdefault.jpg"
+            low.contains("sheila on 7") -> "https://i.ytimg.com/vi/hT_nvWreIhg/hqdefault.jpg"
+            low.contains("dewa 19") -> "https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg"
+            low.contains("hindia") -> "https://i.ytimg.com/vi/bo_efYhYU2A/hqdefault.jpg"
+            low.contains("budi doremi") -> "https://i.ytimg.com/vi/YQHsXMglC9A/hqdefault.jpg"
+            low.contains("juicy luicy") -> "https://i.ytimg.com/vi/RgKAFK5djSk/hqdefault.jpg"
+            fallbackUrl.isNotBlank() -> fallbackUrl
+            else -> "https://lrc.red/s/FRX282637095.webp"
+        }
+    }
+
     fun getArtistProfileFallback(artistName: String, seedItem: MusicItem? = null): ArtistProfileDetail {
         val cleanName = artistName.trim().ifBlank { "Tulus" }
         val low = cleanName.lowercase()
 
-        val avatarUrl = when {
-            low.contains("tulus") -> "https://lrc.red/s/FRX282637095.webp"
-            low.contains("rossa") -> "https://lrc.red/s/IDA170321018.webp"
-            low.contains("nadin") -> "https://i.ytimg.com/vi/kOkQ4T5WO9E/maxresdefault.jpg"
-            low.contains("bernadya") -> "https://i.ytimg.com/vi/60ItHLz5WEA/maxresdefault.jpg"
-            low.contains("mahalini") -> "https://i.ytimg.com/vi/60ItHLz5WEA/maxresdefault.jpg"
-            low.contains("sal priadi") -> "https://i.ytimg.com/vi/nfWlot6h_JM/maxresdefault.jpg"
-            !seedItem?.thumbnailUrl.isNullOrBlank() -> seedItem!!.ultraResThumbnail
-            else -> "https://lrc.red/s/FRX282637095.webp"
-        }
+        val avatarUrl = getArtistAvatarForName(
+            artistName = cleanName,
+            fallbackUrl = seedItem?.ultraResThumbnail.orEmpty()
+        )
 
         val topSongs = listOf(
             MusicItem(
@@ -1017,7 +1031,8 @@ object CuratedHomeFallback {
                 subtitle = "Album • 2023 • 10 lagu",
                 thumbnailUrl = avatarUrl,
                 browseId = "MPREb_manusia_tulus",
-                type = "album"
+                type = "album",
+                previewTracks = topSongs
             ),
             MusicItem(
                 id = "alb_2_${cleanName.lowercase()}",
@@ -1025,7 +1040,8 @@ object CuratedHomeFallback {
                 subtitle = "Album • 2020 • 9 lagu",
                 thumbnailUrl = "https://i.ytimg.com/vi/OPf0YbXqDm0/hqdefault.jpg",
                 browseId = "MPREb_monokrom_tulus",
-                type = "album"
+                type = "album",
+                previewTracks = topSongs
             ),
             MusicItem(
                 id = "alb_3_${cleanName.lowercase()}",
@@ -1033,7 +1049,8 @@ object CuratedHomeFallback {
                 subtitle = "Album • 2018 • 11 lagu",
                 thumbnailUrl = "https://i.ytimg.com/vi/SlPhMPnQ58k/hqdefault.jpg",
                 browseId = "MPREb_gajah_tulus",
-                type = "album"
+                type = "album",
+                previewTracks = topSongs
             )
         )
 
@@ -1044,7 +1061,8 @@ object CuratedHomeFallback {
                 subtitle = "Single • 2024 • Rilis Terbaru",
                 thumbnailUrl = avatarUrl,
                 browseId = "MPREb_single_1",
-                type = "album"
+                type = "album",
+                previewTracks = topSongs.take(3)
             ),
             MusicItem(
                 id = "sgl_2_${cleanName.lowercase()}",
@@ -1052,7 +1070,8 @@ object CuratedHomeFallback {
                 subtitle = "Single • 2023",
                 thumbnailUrl = "https://i.ytimg.com/vi/60ItHLz5WEA/hqdefault.jpg",
                 browseId = "MPREb_single_2",
-                type = "album"
+                type = "album",
+                previewTracks = topSongs.drop(1).take(3)
             ),
             MusicItem(
                 id = "sgl_3_${cleanName.lowercase()}",
@@ -1060,7 +1079,8 @@ object CuratedHomeFallback {
                 subtitle = "EP • 2022",
                 thumbnailUrl = "https://i.ytimg.com/vi/nfWlot6h_JM/hqdefault.jpg",
                 browseId = "MPREb_single_3",
-                type = "album"
+                type = "album",
+                previewTracks = topSongs.drop(2).take(3)
             )
         )
 
@@ -1069,8 +1089,8 @@ object CuratedHomeFallback {
                 id = "vid_1_${cleanName.lowercase()}",
                 title = "${topSongs.first().title} (Official Music Video)",
                 subtitle = "$cleanName • 48 jt x ditonton",
-                thumbnailUrl = avatarUrl,
-                videoId = topSongs.first().videoId,
+                thumbnailUrl = "https://i.ytimg.com/vi/${topSongs.first().videoId ?: "7PCkvCPvDXk"}/hqdefault.jpg",
+                videoId = topSongs.first().videoId ?: "7PCkvCPvDXk",
                 type = "video",
                 duration = "3:52"
             ),
@@ -1089,18 +1109,20 @@ object CuratedHomeFallback {
             MusicItem(
                 id = "feat_pl_1_${cleanName.lowercase()}",
                 title = "Presenting $cleanName",
-                subtitle = "YouTube Music • 50 lagu",
+                subtitle = "YouTube Music • ${topSongs.size} lagu",
                 thumbnailUrl = avatarUrl,
                 browseId = "VLPL5aUxvuyD6pMyvsuFrR0wb7gJrENr3cNf",
-                type = "playlist"
+                type = "playlist",
+                previewTracks = topSongs
             ),
             MusicItem(
                 id = "feat_pl_2_${cleanName.lowercase()}",
                 title = "$cleanName Radio Mix",
-                subtitle = "Koleksi Hits Terbaik",
+                subtitle = "Koleksi Hits Terbaik • ${topSongs.size} lagu",
                 thumbnailUrl = "https://i.ytimg.com/vi/OPf0YbXqDm0/hqdefault.jpg",
                 browseId = "VLPL5aUxvuyD6pMyvsuFrR0wb7gJrENr3cNf",
-                type = "playlist"
+                type = "playlist",
+                previewTracks = topSongs.reversed()
             )
         )
 

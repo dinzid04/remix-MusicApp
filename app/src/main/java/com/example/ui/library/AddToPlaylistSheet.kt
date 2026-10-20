@@ -574,13 +574,18 @@ fun UniversalTrackMenuBottomSheet(
     track: MusicItem,
     isFavorite: Boolean,
     isDownloaded: Boolean,
-    activeDownloadProgress: ActiveDownloadProgress?,
+    activeDownloadProgress: ActiveDownloadProgress? = null,
+    downloadProgressPercent: Int? = activeDownloadProgress?.progressPercent,
+    isVideoModeActive: Boolean = false,
     onDismiss: () -> Unit,
+    onPlayNow: (() -> Unit)? = null,
+    onToggleVideoMode: (() -> Unit)? = null,
     onToggleFavorite: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onDownloadTrack: () -> Unit,
     onRemoveDownload: () -> Unit = {},
     onOpenArtist: (() -> Unit)? = null,
+    onOpenArtistProfile: (() -> Unit)? = onOpenArtist,
     onRemoveFromCurrentPlaylist: (() -> Unit)? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -607,7 +612,7 @@ fun UniversalTrackMenuBottomSheet(
                 AsyncImage(
                     model = remember(track.thumbnailUrl) {
                         ImageRequest.Builder(context)
-                            .data(track.thumbnailUrl)
+                            .data(track.highResThumbnail)
                             .size(Size(144, 144))
                             .crossfade(false)
                             .build()
@@ -648,6 +653,21 @@ fun UniversalTrackMenuBottomSheet(
                 modifier = Modifier.padding(vertical = 10.dp)
             )
 
+            // 0. Switch to Video / Switch to Cover Image (shown in Music Player 3-dot menu!)
+            if (onToggleVideoMode != null) {
+                SheetActionRow(
+                    icon = Icons.Rounded.MusicNote,
+                    iconTint = Color(0xFF38EF7D),
+                    title = if (isVideoModeActive) "Kembali ke Gambar Sampul" else "Ubah ke Video Musik (Full)",
+                    subtitle = if (isVideoModeActive) "Tampilkan sampul album standar" else "Putar video YouTube secara penuh di pemutar musik",
+                    onClick = {
+                        onToggleVideoMode()
+                        onDismiss()
+                    },
+                    testTag = "menu_toggle_video_mode"
+                )
+            }
+
             // 1. Sukai / Batal Sukai
             SheetActionRow(
                 icon = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
@@ -675,7 +695,7 @@ fun UniversalTrackMenuBottomSheet(
             )
 
             // 3. Download Lagu Offline
-            if (activeDownloadProgress != null) {
+            if (downloadProgressPercent != null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -683,7 +703,7 @@ fun UniversalTrackMenuBottomSheet(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     CircularProgressIndicator(
-                        progress = { activeDownloadProgress.progressPercent / 100f },
+                        progress = { downloadProgressPercent / 100f },
                         modifier = Modifier.size(24.dp),
                         color = Color(0xFF38EF7D),
                         strokeWidth = 3.dp
@@ -691,14 +711,14 @@ fun UniversalTrackMenuBottomSheet(
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Mengunduh... ${activeDownloadProgress.progressPercent}%",
+                            text = "Mengunduh... $downloadProgressPercent%",
                             fontFamily = PlusJakartaSans,
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
                             color = Color(0xFF38EF7D)
                         )
                         Text(
-                            text = "Progres unduhan tampil di Notifikasi",
+                            text = "Progres unduhan tampil di Notifikasi Status Bar HP",
                             fontFamily = PlusJakartaSans,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp,
@@ -723,7 +743,7 @@ fun UniversalTrackMenuBottomSheet(
                     icon = Icons.Rounded.Download,
                     iconTint = Color(0xFF38EF7D),
                     title = "Download Musik (Offline)",
-                    subtitle = "Simpan ke penyimpanan & putar secara offline",
+                    subtitle = "Simpan ke penyimpanan & tampilkan bar % di Notifikasi HP",
                     onClick = {
                         onDownloadTrack()
                         onDismiss()
@@ -748,7 +768,8 @@ fun UniversalTrackMenuBottomSheet(
             }
 
             // 5. Lihat Artis
-            if (onOpenArtist != null) {
+            val artistAction = onOpenArtistProfile ?: onOpenArtist
+            if (artistAction != null) {
                 SheetActionRow(
                     icon = Icons.Rounded.Person,
                     iconTint = Color.White,
@@ -756,7 +777,7 @@ fun UniversalTrackMenuBottomSheet(
                     subtitle = track.cleanArtist,
                     onClick = {
                         onDismiss()
-                        onOpenArtist()
+                        artistAction()
                     },
                     testTag = "menu_open_artist"
                 )

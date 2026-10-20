@@ -5,6 +5,7 @@ import com.example.data.local.LibraryPlaylistEntity
 import com.example.data.local.PlaylistTrackEntity
 import com.example.data.local.RecentTrackDao
 import com.example.data.local.RecentTrackEntity
+import com.example.data.local.SubscribedArtistEntity
 import com.example.data.model.ArtistProfileDetail
 import com.example.data.model.AudioStreamInfo
 import com.example.data.model.DownloadedTrackItem
@@ -18,6 +19,8 @@ import com.example.data.model.PlaylistPrivacy
 import com.example.data.model.PlaylistSourceType
 import com.example.data.model.SearchCategorySection
 import com.example.data.model.SearchSuggestionPayload
+import com.example.data.model.SpotifyImportProgressState
+import com.example.data.model.SubscribedArtistItem
 import com.example.data.model.UserLibraryPlaylist
 import com.example.data.remote.CuratedHomeFallback
 import com.example.data.remote.LrcRedService
@@ -70,14 +73,26 @@ class MusicRepository(
             }
         }
 
+    val subscribedArtistsFlow: Flow<List<SubscribedArtistItem>> = recentTrackDao.observeSubscribedArtists()
+        .map { list -> list.map { it.toDomain() } }
+
+    suspend fun upsertSubscribedArtist(artist: SubscribedArtistItem) {
+        recentTrackDao.upsertSubscribedArtist(SubscribedArtistEntity.fromDomain(artist))
+    }
+
+    suspend fun deleteSubscribedArtist(browseId: String) {
+        recentTrackDao.deleteSubscribedArtistById(browseId)
+    }
+
     suspend fun createCustomPlaylist(
         title: String,
         privacy: PlaylistPrivacy = PlaylistPrivacy.PRIVATE,
-        initialTrack: MusicItem? = null
+        initialTrack: MusicItem? = null,
+        ownerUsername: String = "user"
     ): UserLibraryPlaylist {
         val cleanTitle = title.trim().ifBlank { "Playlist Baru" }
         val id = "custom_pl_${System.currentTimeMillis()}"
-        val subtitle = "Qiaa"
+        val subtitle = ownerUsername.ifBlank { "user" }
         val thumb = initialTrack?.highResThumbnail.orEmpty()
         val entity = LibraryPlaylistEntity(
             id = id,
@@ -117,7 +132,7 @@ class MusicRepository(
         val entity = LibraryPlaylistEntity(
             id = playlistId,
             title = playlistDetail.title,
-            subtitle = playlistDetail.subtitle.ifBlank { "Koleksi Tersimpan" },
+            subtitle = playlistDetail.subtitle.ifBlank { "user" },
             thumbnailUrl = effectiveThumb,
             privacy = PlaylistPrivacy.PUBLIC.name,
             isPinned = false,
@@ -136,17 +151,18 @@ class MusicRepository(
     suspend fun saveOrImportPlaylistToLibrary(
         item: MusicItem,
         sourceType: PlaylistSourceType,
-        tracks: List<MusicItem> = item.previewTracks
+        tracks: List<MusicItem> = item.previewTracks,
+        ownerUsername: String = "user"
     ) {
         val playlistId = item.browseId?.takeIf { it.isNotBlank() } ?: item.id
         val effectiveThumb = item.highResThumbnail.ifBlank {
             tracks.firstOrNull()?.highResThumbnail.orEmpty()
         }
         val subtitle = when (sourceType) {
-            PlaylistSourceType.SPOTIFY_IMPORT -> "Spotify • Qiaa"
-            PlaylistSourceType.YOUTUBE_IMPORT -> "YouTube Music • Qiaa"
-            PlaylistSourceType.SAVED_COMMUNITY -> item.cleanArtist.ifBlank { "Koleksi Tersimpan" }
-            else -> "Qiaa"
+            PlaylistSourceType.SPOTIFY_IMPORT -> "Spotify • $ownerUsername"
+            PlaylistSourceType.YOUTUBE_IMPORT -> "YouTube Music • $ownerUsername"
+            PlaylistSourceType.SAVED_COMMUNITY -> item.cleanArtist.ifBlank { ownerUsername }
+            else -> ownerUsername
         }
         val entity = LibraryPlaylistEntity(
             id = playlistId,
@@ -193,6 +209,20 @@ class MusicRepository(
 
     suspend fun deleteLibraryPlaylist(playlistId: String) {
         deletePlaylist(playlistId)
+    }
+
+    suspend fun reorderPlaylistTracks(playlistId: String, orderedTracks: List<MusicItem>) {
+        val entities = orderedTracks.mapIndexed { idx, track ->
+            PlaylistTrackEntity.fromMusicItem(
+                playlistId = playlistId,
+                item = track,
+                orderOffset = idx.toLong()
+            )
+        }
+        recentTrackDao.replacePlaylistTracks(playlistId, entities)
+        orderedTracks.firstOrNull()?.highResThumbnail?.takeIf { it.isNotBlank() }?.let { firstThumb ->
+            recentTrackDao.updatePlaylistThumbnail(playlistId, firstThumb)
+        }
     }
 
     suspend fun addTrackToPlaylist(playlistId: String, track: MusicItem) {
@@ -243,26 +273,42 @@ class MusicRepository(
             return PlaylistDetail(
                 browseId = targetId,
                 title = item.title,
-                authorSubtitle = item.subtitle.substringBefore("•").trim().ifBlank { "Qiaa" },
-                metaSubtitle = "PLAYLIST • ${effectiveTracks.size} LAGU",
+                authorSubtitle = item.subtitle.substringBefore("•").trim().ifBlank { "user" },
+                metaSubtitle = "PLAYLIST • ${effectiveTracks.size} TRACKS",
                 description = "Disimpan di Perpustakaan Anda",
                 thumbnailUrl = cover,
                 totalTracks = effectiveTracks.size,
                 tracks = effectiveTracks
             )
         }
-        if (item.previewTracks.isNotEmpty() && (item.id.startsWith("spotify_") || item.id.startsWith("ytm_sync_"))) {
+        if (item.previewTracks.isNotEmpty() && (
+                item.id.startsWith("spotify_") ||
+                item.id.startsWith("ytm_sync_") ||
+                item.id.startsWith("feat_pl_") ||
+                item.id.startsWith("artist_radio_")
+            )
+        ) {
             return CuratedHomeFallback.getPlaylistFallback(item).copy(
                 title = item.title,
-                authorSubtitle = item.subtitle,
-                metaSubtitle = item.viewsAndCountText ?: "${item.previewTracks.size} lagu",
-                thumbnailUrl = item.ultraResThumbnail,
+                authorSubtitle = item.subtitle.ifBlank { "user" },
+                metaSubtitle = "PLAYLIST • ${item.previewTracks.size} TRACKS",
+                thumbnailUrl = item.ultraResThumbnail.ifBlank {
+                    item.previewTracks.firstOrNull()?.ultraResThumbnail.orEmpty()
+                },
                 totalTracks = item.previewTracks.size,
                 tracks = item.previewTracks
             )
         }
         return try {
-            scraper.getPlaylistOrAlbumDetail(item, hl = "id", gl = "ID")
+            val detail = scraper.getPlaylistOrAlbumDetail(item, hl = "id", gl = "ID")
+            if (detail.tracks.isEmpty() && item.previewTracks.isNotEmpty()) {
+                detail.copy(
+                    tracks = item.previewTracks,
+                    totalTracks = item.previewTracks.size
+                )
+            } else {
+                detail
+            }
         } catch (_: Exception) {
             CuratedHomeFallback.getPlaylistFallback(item)
         }
@@ -281,24 +327,36 @@ class MusicRepository(
         }
     }
 
-    suspend fun connectSpotifyAndImport(accountInput: String, tokenOrUrl: String): PlaylistIntegrationService.IntegrationSyncResult {
-        val res = integrationService.connectAndImportSpotify(accountInput, tokenOrUrl)
+    suspend fun connectSpotifyAndImport(
+        accountInput: String,
+        tokenOrUrl: String,
+        onProgress: ((SpotifyImportProgressState) -> Unit)? = null
+    ): PlaylistIntegrationService.IntegrationSyncResult {
+        val res = integrationService.connectAndImportSpotify(accountInput, tokenOrUrl, onProgress)
         res.importedPlaylists.forEach { pl ->
             saveOrImportPlaylistToLibrary(pl, PlaylistSourceType.SPOTIFY_IMPORT, pl.previewTracks)
         }
         return res
     }
 
-    suspend fun connectYouTubeMusicAndImport(googleEmail: String, tokenOrUrl: String): PlaylistIntegrationService.IntegrationSyncResult {
-        val res = integrationService.connectAndImportYouTubeMusic(googleEmail, tokenOrUrl)
+    suspend fun connectYouTubeMusicAndImport(
+        googleEmail: String,
+        tokenOrUrl: String,
+        onProgress: ((SpotifyImportProgressState) -> Unit)? = null
+    ): PlaylistIntegrationService.IntegrationSyncResult {
+        val res = integrationService.connectAndImportYouTubeMusic(googleEmail, tokenOrUrl, onProgress)
         res.importedPlaylists.forEach { pl ->
             saveOrImportPlaylistToLibrary(pl, PlaylistSourceType.YOUTUBE_IMPORT, pl.previewTracks)
         }
         return res
     }
 
-    suspend fun importPlaylistByUrl(platform: IntegrationPlatform, urlOrId: String): MusicItem? {
-        val imported = integrationService.importPlaylistByUrl(platform, urlOrId)
+    suspend fun importPlaylistByUrl(
+        platform: IntegrationPlatform,
+        urlOrId: String,
+        onProgress: ((SpotifyImportProgressState) -> Unit)? = null
+    ): MusicItem? {
+        val imported = integrationService.importPlaylistByUrl(platform, urlOrId, onProgress)
         if (imported != null) {
             val src = if (platform == IntegrationPlatform.SPOTIFY) {
                 PlaylistSourceType.SPOTIFY_IMPORT
@@ -361,6 +419,10 @@ class MusicRepository(
 
     suspend fun resolveAudioStream(item: MusicItem): AudioStreamInfo? {
         return scraper.getAudioStream(item)
+    }
+
+    suspend fun resolveVideoStreamUrl(item: MusicItem): String? {
+        return scraper.getVideoStreamUrl(item)
     }
 
     suspend fun getTrackLyrics(
@@ -459,4 +521,3 @@ class MusicRepository(
         }
     }
 }
-

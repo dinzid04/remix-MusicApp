@@ -39,13 +39,19 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.ThumbUp
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -56,9 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size as ComposeSize
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -69,6 +73,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,37 +86,39 @@ import com.example.data.model.DownloadedTrackItem
 import com.example.data.model.ListeningStatsState
 import com.example.data.model.MusicItem
 import com.example.data.model.PlaylistPrivacy
-import com.example.data.model.PlaylistSourceType
+import com.example.data.model.SubscribedArtistItem
 import com.example.data.model.UserLibraryPlaylist
+import com.example.data.remote.CuratedHomeFallback
 import com.example.ui.theme.PlusJakartaSans
 
 @Immutable
 private data class LibraryArtistCardModel(
     val name: String,
-    val songCount: Int,
-    val thumbnailUrl: String
+    val subtitle: String,
+    val avatarUrl: String,
+    val isSubscribed: Boolean = false
 )
 
 private val DefaultLibraryArtists = listOf(
     LibraryArtistCardModel(
-        name = "Bravesboy",
-        songCount = 1,
-        thumbnailUrl = "https://i.ytimg.com/vi/ef1ef8c40sM/hqdefault.jpg"
+        name = "Rossa",
+        subtitle = "Artis",
+        avatarUrl = CuratedHomeFallback.getArtistAvatarForName("Rossa")
     ),
     LibraryArtistCardModel(
-        name = "Daun Jatuh",
-        songCount = 1,
-        thumbnailUrl = "https://i.ytimg.com/vi/7n27x2A78No/hqdefault.jpg"
+        name = "Tulus",
+        subtitle = "Artis",
+        avatarUrl = CuratedHomeFallback.getArtistAvatarForName("Tulus")
     ),
     LibraryArtistCardModel(
-        name = "Dido",
-        songCount = 1,
-        thumbnailUrl = "https://i.ytimg.com/vi/1TO48Cnl66w/hqdefault.jpg"
+        name = "Mahalini",
+        subtitle = "Artis",
+        avatarUrl = CuratedHomeFallback.getArtistAvatarForName("Mahalini")
     ),
     LibraryArtistCardModel(
-        name = "Kaleb J",
-        songCount = 1,
-        thumbnailUrl = "https://i.ytimg.com/vi/v26fT5X72rU/hqdefault.jpg"
+        name = "Hindia",
+        subtitle = "Artis",
+        avatarUrl = CuratedHomeFallback.getArtistAvatarForName("Hindia")
     )
 )
 
@@ -125,6 +132,8 @@ fun LibraryScreen(
     localDeviceTracks: List<MusicItem>,
     activeDownloads: Map<String, ActiveDownloadProgress>,
     candidateTracksForAdd: List<MusicItem>,
+    subscribedArtists: List<SubscribedArtistItem> = emptyList(),
+    onUpdateUsername: (String) -> Unit = {},
     onOpenLikedSongs: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenLocalMusic: () -> Unit,
@@ -142,37 +151,75 @@ fun LibraryScreen(
     modifier: Modifier = Modifier
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showEditUsernameDialog by remember { mutableStateOf(false) }
     var showAllPlaylistsSheet by remember { mutableStateOf(false) }
     var playlistForMenu by remember { mutableStateOf<UserLibraryPlaylist?>(null) }
     var playlistForRename by remember { mutableStateOf<UserLibraryPlaylist?>(null) }
     var playlistForAddSongs by remember { mutableStateOf<UserLibraryPlaylist?>(null) }
 
     val context = LocalContext.current
+    val currentUsername = listeningStats.userHandle.ifBlank { "user" }
 
-    // Compute artists added to the user's Library (from Liked Songs, User Playlists, and Downloads)
-    val libraryArtists = remember(favoriteTracks, libraryPlaylists, downloadedTracks) {
+    // Compute circular artist avatars from Subscribed Artists + Library Songs (ALWAYS using authentic artist portrait URLs, never playlist covers!)
+    val libraryArtists = remember(subscribedArtists, favoriteTracks, libraryPlaylists, downloadedTracks) {
+        val subscribedModels = subscribedArtists.map { sub ->
+            LibraryArtistCardModel(
+                name = sub.name,
+                subtitle = "Disubscribe",
+                avatarUrl = sub.avatarUrl.ifBlank {
+                    CuratedHomeFallback.getArtistAvatarForName(sub.name)
+                },
+                isSubscribed = true
+            )
+        }
+
+        val subscribedNamesLower = subscribedModels.map { it.name.lowercase() }.toSet()
+
         val userLibraryTracks = buildList {
             addAll(favoriteTracks)
             libraryPlaylists.forEach { addAll(it.tracks) }
             downloadedTracks.forEach { add(it.toMusicItem()) }
         }
-        val groupedUserArtists = userLibraryTracks
-            .filter { it.cleanArtist.isNotBlank() && !it.cleanArtist.equals("Artis", ignoreCase = true) }
-            .groupBy { it.cleanArtist.trim() }
-            .map { (artistName, tracks) ->
+
+        val trackArtistModels = userLibraryTracks
+            .map { it.cleanArtist.substringBefore(",").substringBefore("&").trim() }
+            .filter {
+                it.isNotBlank() &&
+                    !it.equals("Artis", ignoreCase = true) &&
+                    !it.equals("Spotify", ignoreCase = true) &&
+                    !it.equals("YouTube Music", ignoreCase = true) &&
+                    it.lowercase() !in subscribedNamesLower
+            }
+            .groupBy { it.lowercase() }
+            .map { (_, names) ->
+                val displayName = names.first()
+                val count = names.size.coerceAtLeast(1)
                 LibraryArtistCardModel(
-                    name = artistName,
-                    songCount = tracks.distinctBy { it.id }.size.coerceAtLeast(1),
-                    thumbnailUrl = tracks.firstOrNull { it.thumbnailUrl.isNotBlank() }?.highResThumbnail
-                        ?: "https://i.ytimg.com/vi/ef1ef8c40sM/hqdefault.jpg"
+                    name = displayName,
+                    subtitle = "$count lagu",
+                    avatarUrl = CuratedHomeFallback.getArtistAvatarForName(displayName),
+                    isSubscribed = false
                 )
             }
 
-        val existingNames = groupedUserArtists.map { it.name.lowercase() }.toSet()
-        val combined = groupedUserArtists + DefaultLibraryArtists.filter {
-            it.name.lowercase() !in existingNames
+        val combinedUser = subscribedModels + trackArtistModels
+        val existingNames = combinedUser.map { it.name.lowercase() }.toSet()
+        if (combinedUser.isNotEmpty()) {
+            combinedUser + DefaultLibraryArtists.filter { it.name.lowercase() !in existingNames }.take(2)
+        } else {
+            DefaultLibraryArtists
         }
-        combined
+    }
+
+    if (showEditUsernameDialog) {
+        EditUsernameDialog(
+            currentUsername = currentUsername,
+            onDismiss = { showEditUsernameDialog = false },
+            onSave = { updated ->
+                onUpdateUsername(updated)
+                showEditUsernameDialog = false
+            }
+        )
     }
 
     if (showCreateDialog) {
@@ -235,6 +282,7 @@ fun LibraryScreen(
 
     if (showAllPlaylistsSheet) {
         AllLibraryPlaylistsBottomSheet(
+            username = currentUsername,
             favoriteTracksCount = favoriteTracks.size,
             libraryPlaylists = libraryPlaylists,
             onDismiss = { showAllPlaylistsSheet = false },
@@ -347,21 +395,22 @@ fun LibraryScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Card 1: MINUTES LISTENED
+                // Card 1: MINUTES LISTENED + Total Plays + Editable Username + Install Date
                 item(key = "stats_card_minutes") {
                     ListeningExperienceCard(
                         mainValue = "${listeningStats.minutesListened}",
                         mainValueFontSize = 32.sp,
                         metricLabel = "MINUTES LISTENED",
-                        userHandle = listeningStats.userHandle,
+                        userHandle = currentUsername,
                         bottomSubtitle = "${listeningStats.totalPlays} Plays • 2026",
                         memberSinceLabel = "ANGGOTA SEJAK",
                         memberSinceValue = listeningStats.memberSince,
-                        onClick = onOpenLikedSongs
+                        onClick = onOpenLikedSongs,
+                        onUsernameClick = { showEditUsernameDialog = true }
                     )
                 }
 
-                // Card 2: TOP SONG
+                // Card 2: TOP SONG + Accumulated Plays of Top Song + Editable Username
                 item(key = "stats_card_top_song") {
                     val topSongTitle = listeningStats.topTrack?.title ?: listeningStats.topSongTitle
                     val topSongArtist = listeningStats.topTrack?.cleanArtist ?: listeningStats.topSongArtist
@@ -369,13 +418,14 @@ fun LibraryScreen(
                         mainValue = topSongTitle,
                         mainValueFontSize = 26.sp,
                         metricLabel = "TOP SONG",
-                        userHandle = listeningStats.userHandle,
+                        userHandle = currentUsername,
                         bottomSubtitle = "$topSongArtist • ${listeningStats.topSongPlays} Plays",
                         memberSinceLabel = null,
                         memberSinceValue = null,
                         onClick = {
                             listeningStats.topTrack?.let(onPlayTopTrack) ?: onOpenLikedSongs()
-                        }
+                        },
+                        onUsernameClick = { showEditUsernameDialog = true }
                     )
                 }
             }
@@ -580,7 +630,7 @@ fun LibraryScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "Disimpan ke YouTube ...",
+                                text = "Disimpan ke Library...",
                                 fontFamily = PlusJakartaSans,
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 12.5.sp,
@@ -771,9 +821,9 @@ fun LibraryScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                             val ownerLabel = when {
-                                playlist.platformBadge.isNotBlank() -> "Qiaa • ${playlist.platformBadge}"
-                                playlist.tracks.isNotEmpty() -> "Qiaa • ${playlist.tracks.size} lagu"
-                                else -> "Qiaa"
+                                playlist.tracks.isNotEmpty() -> "$currentUsername • ${playlist.tracks.size} lagu"
+                                playlist.platformBadge.isNotBlank() -> "$currentUsername • ${playlist.platformBadge}"
+                                else -> currentUsername
                             }
                             Text(
                                 text = ownerLabel,
@@ -790,7 +840,7 @@ fun LibraryScreen(
             }
         }
 
-        // 5. SECTION: ARTIS (Square 148dp Artist Cards from User's Library)
+        // 5. SECTION: ARTIS — Circular (CircleShape) Artist Profile Avatars with Authentic Portraits
         item(key = "library_artists_section") {
             Column(
                 modifier = Modifier
@@ -812,38 +862,44 @@ fun LibraryScreen(
                 LazyRow(
                     modifier = Modifier.fillMaxWidth(),
                     contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     items(
                         items = libraryArtists,
                         key = { "lib_artist_${it.name}" }
                     ) { artist ->
                         Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
-                                .width(148.dp)
+                                .width(132.dp)
+                                .clip(RoundedCornerShape(16.dp))
                                 .clickable { onOpenArtistByName(artist.name) }
+                                .padding(vertical = 4.dp)
                                 .testTag("library_artist_card_${artist.name}")
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(148.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(Color(0xFF18181C))
+                                    .size(124.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF18181C)),
+                                contentAlignment = Alignment.Center
                             ) {
                                 AsyncImage(
-                                    model = remember(artist.thumbnailUrl) {
+                                    model = remember(artist.avatarUrl) {
                                         ImageRequest.Builder(context)
-                                            .data(artist.thumbnailUrl)
+                                            .data(artist.avatarUrl)
                                             .size(Size(320, 320))
                                             .crossfade(false)
                                             .build()
                                     },
                                     contentDescription = artist.name,
                                     contentScale = ContentScale.Crop,
-                                    modifier = Modifier.matchParentSize()
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(CircleShape)
                                 )
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
                             Text(
                                 text = artist.name,
                                 fontFamily = PlusJakartaSans,
@@ -851,102 +907,18 @@ fun LibraryScreen(
                                 fontSize = 14.5.sp,
                                 color = Color.White,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center
                             )
                             Text(
-                                text = "${artist.songCount} lagu",
+                                text = artist.subtitle,
                                 fontFamily = PlusJakartaSans,
                                 fontWeight = FontWeight.SemiBold,
-                                fontSize = 12.5.sp,
-                                color = Color(0xFF8E8E95),
+                                fontSize = 12.sp,
+                                color = if (artist.isSubscribed) Color(0xFF8AB4F8) else Color(0xFF8E8E95),
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // 6. SECTION: PODCASTS ("Episode untuk Nanti" Gradient Card)
-        item(key = "library_podcasts_section") {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp)
-            ) {
-                Text(
-                    text = "Podcasts",
-                    fontFamily = PlusJakartaSans,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 22.sp,
-                    color = Color.White,
-                    letterSpacing = (-0.5).sp,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    item(key = "podcast_episodes_for_later") {
-                        Column(
-                            modifier = Modifier
-                                .width(148.dp)
-                                .clickable {
-                                    val existingPodcastList = libraryPlaylists.firstOrNull {
-                                        it.title.equals("Episode untuk Nanti", ignoreCase = true)
-                                    }
-                                    if (existingPodcastList != null) {
-                                        onOpenPlaylist(existingPodcastList)
-                                    } else {
-                                        onOpenLikedSongs()
-                                    }
-                                }
-                                .testTag("library_podcasts_episodes_later_card")
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(148.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(
-                                        Brush.linearGradient(
-                                            colors = listOf(
-                                                Color(0xFFF3A7B8),
-                                                Color(0xFFB799F5),
-                                                Color(0xFF7B88FA)
-                                            ),
-                                            start = Offset(0f, 0f),
-                                            end = Offset(420f, 420f)
-                                        )
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                PodcastsQueueGraphic(
-                                    modifier = Modifier.size(86.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Episode untuk Nanti",
-                                fontFamily = PlusJakartaSans,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 14.5.sp,
-                                color = Color.White,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "Episode dalam antrea...",
-                                fontFamily = PlusJakartaSans,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 12.5.sp,
-                                color = Color(0xFF8E8E95),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center
                             )
                         }
                     }
@@ -965,7 +937,8 @@ private fun ListeningExperienceCard(
     bottomSubtitle: String,
     memberSinceLabel: String?,
     memberSinceValue: String?,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onUsernameClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -1030,20 +1003,36 @@ private fun ListeningExperienceCard(
             )
         }
 
-        // Bottom Footer
+        // Bottom Footer (Clicking username opens EditUsernameDialog)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.Bottom
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = userHandle,
-                    fontFamily = PlusJakartaSans,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 11.5.sp,
-                    color = Color(0xFFBEBEC4)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(onClick = onUsernameClick)
+                        .padding(vertical = 1.dp)
+                        .testTag("library_edit_username_trigger")
+                ) {
+                    Text(
+                        text = userHandle,
+                        fontFamily = PlusJakartaSans,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 12.sp,
+                        color = Color(0xFFDCDCE2)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Rounded.Edit,
+                        contentDescription = "Ubah Username",
+                        tint = Color(0xFF9A9AA0),
+                        modifier = Modifier.size(11.dp)
+                    )
+                }
                 Text(
                     text = bottomSubtitle,
                     fontFamily = PlusJakartaSans,
@@ -1069,7 +1058,7 @@ private fun ListeningExperienceCard(
                         text = memberSinceValue,
                         fontFamily = PlusJakartaSans,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 12.5.sp,
+                        fontSize = 11.5.sp,
                         color = Color(0xFFBEBEC4)
                     )
                 }
@@ -1079,13 +1068,89 @@ private fun ListeningExperienceCard(
 }
 
 @Composable
+private fun EditUsernameDialog(
+    currentUsername: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var nameInput by remember(currentUsername) { mutableStateOf(currentUsername) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF181820),
+        titleContentColor = Color.White,
+        textContentColor = Color.White,
+        title = {
+            Text(
+                text = "Ubah Username",
+                fontFamily = PlusJakartaSans,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 19.sp
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = "Nama ini ditampilkan pada kartu Pengalaman Mendengarkan dan Playlist Anda.",
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp,
+                    color = Color(0xFFA0A0AB)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    singleLine = true,
+                    placeholder = { Text("user") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = Color(0xFF8AB4F8),
+                        unfocusedBorderColor = Color(0xFF383846)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("edit_username_input")
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(nameInput.trim().ifBlank { "user" }) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF8AB4F8),
+                    contentColor = Color(0xFF10131A)
+                ),
+                modifier = Modifier.testTag("save_username_button")
+            ) {
+                Text(
+                    text = "Simpan",
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = "Batal",
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFA0A0AB)
+                )
+            }
+        }
+    )
+}
+
+@Composable
 private fun BitChordWavesLogo(modifier: Modifier = Modifier) {
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
         val strokeColor = Color(0xFFBEBEC4)
 
-        // Top wave
         val path1 = Path().apply {
             moveTo(w * 0.18f, h * 0.14f)
             quadraticTo(w * 0.52f, h * 0.30f, w * 0.88f, h * 0.20f)
@@ -1096,7 +1161,6 @@ private fun BitChordWavesLogo(modifier: Modifier = Modifier) {
             style = Stroke(width = 3.2.dp.toPx(), cap = StrokeCap.Round)
         )
 
-        // Middle wave
         val path2 = Path().apply {
             moveTo(w * 0.10f, h * 0.48f)
             quadraticTo(w * 0.50f, h * 0.66f, w * 0.92f, h * 0.54f)
@@ -1107,7 +1171,6 @@ private fun BitChordWavesLogo(modifier: Modifier = Modifier) {
             style = Stroke(width = 3.2.dp.toPx(), cap = StrokeCap.Round)
         )
 
-        // Bottom wave
         val path3 = Path().apply {
             moveTo(w * 0.04f, h * 0.82f)
             quadraticTo(w * 0.48f, h * 1.02f, w * 0.96f, h * 0.88f)
@@ -1166,80 +1229,10 @@ private fun SpotifyCircleLogo(modifier: Modifier = Modifier) {
     }
 }
 
-@Composable
-private fun PodcastsQueueGraphic(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        val white = Color.White
-
-        // Top stacked lines (album stack indicator)
-        drawRoundRect(
-            color = white,
-            topLeft = Offset(w * 0.22f, h * 0.02f),
-            size = ComposeSize(w * 0.56f, h * 0.045f),
-            cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
-        )
-        drawRoundRect(
-            color = white,
-            topLeft = Offset(w * 0.14f, h * 0.095f),
-            size = ComposeSize(w * 0.72f, h * 0.045f),
-            cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
-        )
-
-        // Main rounded square body
-        drawRoundRect(
-            color = white,
-            topLeft = Offset(w * 0.06f, h * 0.17f),
-            size = ComposeSize(w * 0.88f, h * 0.79f),
-            cornerRadius = CornerRadius(10.dp.toPx(), 10.dp.toPx())
-        )
-
-        val accent = Color(0xFF968EF6)
-        val cx = w * 0.50f
-        val cy = h * 0.54f
-
-        // Outer podcast signal arc
-        drawArc(
-            color = accent,
-            startAngle = 140f,
-            sweepAngle = 260f,
-            useCenter = false,
-            topLeft = Offset(cx - w * 0.26f, cy - h * 0.24f),
-            size = ComposeSize(w * 0.52f, h * 0.48f),
-            style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
-        )
-
-        // Microphone capsule in center
-        drawRoundRect(
-            color = accent,
-            topLeft = Offset(cx - w * 0.08f, cy - h * 0.11f),
-            size = ComposeSize(w * 0.16f, h * 0.24f),
-            cornerRadius = CornerRadius(8.dp.toPx(), 8.dp.toPx()),
-            style = Stroke(width = 3.5.dp.toPx())
-        )
-
-        // Microphone stand stem & base
-        drawLine(
-            color = accent,
-            start = Offset(cx, cy + h * 0.14f),
-            end = Offset(cx, cy + h * 0.25f),
-            strokeWidth = 3.5.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        drawLine(
-            color = accent,
-            start = Offset(cx - w * 0.08f, cy + h * 0.25f),
-            end = Offset(cx + w * 0.08f, cy + h * 0.25f),
-            strokeWidth = 3.5.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AllLibraryPlaylistsBottomSheet(
+    username: String,
     favoriteTracksCount: Int,
     libraryPlaylists: List<UserLibraryPlaylist>,
     onDismiss: () -> Unit,
@@ -1428,7 +1421,7 @@ private fun AllLibraryPlaylistsBottomSheet(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "Qiaa • ${playlist.tracks.size} lagu",
+                                text = "$username • ${playlist.tracks.size} lagu",
                                 fontFamily = PlusJakartaSans,
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 13.sp,

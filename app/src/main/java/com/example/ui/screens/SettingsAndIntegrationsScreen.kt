@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.data.model.ConnectedAccountState
 import com.example.data.model.IntegrationPlatform
+import com.example.data.model.SpotifyImportProgressState
 
 @Composable
 fun SettingsScreen(
@@ -368,6 +369,7 @@ fun AccountIntegrationsScreen(
     spotifyAccount: ConnectedAccountState,
     ytMusicAccount: ConnectedAccountState,
     isSyncing: Boolean,
+    spotifyImportProgress: SpotifyImportProgressState? = null,
     statusMessage: String?,
     onBack: () -> Unit,
     onConnectSpotify: (String, String) -> Unit,
@@ -614,30 +616,143 @@ fun AccountIntegrationsScreen(
                 }
             }
 
-            // Loading progress when syncing playlists
+            // Loading & Real-Time Progress Bar when syncing/scanning Spotify & YT Music playlists
             item {
-                AnimatedVisibility(visible = isSyncing) {
-                    Row(
+                AnimatedVisibility(visible = isSyncing || spotifyImportProgress != null) {
+                    val progressState = spotifyImportProgress
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0xFF1B2432))
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color(0xFF17212D))
+                            .border(1.dp, Color(0xFF1ED760).copy(alpha = 0.35f), RoundedCornerShape(20.dp))
+                            .padding(18.dp)
+                            .testTag("spotify_import_progress_card")
                     ) {
-                        CircularProgressIndicator(
-                            color = Color(0xFF1ED760),
-                             strokeWidth = 2.5.dp,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(14.dp))
-                        Text(
-                            text = "Mengambil & menyinkronkan lagu playlist ke pustaka...",
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                if (progressState?.isActive == true || isSyncing) {
+                                    CircularProgressIndicator(
+                                        color = Color(0xFF1ED760),
+                                        strokeWidth = 2.5.dp,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Filled.CheckCircle,
+                                        contentDescription = null,
+                                        tint = Color(0xFF1ED760),
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                                Column {
+                                    Text(
+                                        text = progressState?.playlistTitle?.ifBlank { "Memindai Playlist Spotify..." }
+                                            ?: "Menyinkronkan Playlist ke Library...",
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (progressState != null && progressState.totalTracks > 0) {
+                                        Text(
+                                            text = "Memindai semua lagu (${progressState.processedTracks}/${progressState.totalTracks} lagu) + gambar asli per musik",
+                                            color = Color(0xFFA6B0C2),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (progressState != null) {
+                                Text(
+                                    text = "${progressState.progressPercent}%",
+                                    color = Color(0xFF1ED760),
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+
+                        if (progressState != null) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            LinearProgressIndicator(
+                                progress = { (progressState.progressPercent / 100f).coerceIn(0f, 1f) },
+                                color = Color(0xFF1ED760),
+                                trackColor = Color.White.copy(alpha = 0.12f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(50))
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(Color(0xFF1ED760).copy(alpha = 0.16f))
+                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "✓ Berhasil: ${progressState.succeededTracks}",
+                                            color = Color(0xFF1ED760),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(Color(0xFFFF6B6B).copy(alpha = 0.16f))
+                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "✕ Gagal: ${progressState.failedTracks}",
+                                            color = Color(0xFFFF6B6B),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+
+                                Text(
+                                    text = "Total: ${progressState.totalTracks}",
+                                    color = Color.White.copy(alpha = 0.8f),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            if (progressState.currentTrackTitle.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = progressState.currentTrackTitle,
+                                    color = Color(0xFFD5DCE8),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
                     }
                 }
             }
