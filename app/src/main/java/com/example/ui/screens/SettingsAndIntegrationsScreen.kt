@@ -37,7 +37,10 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenAccountIntegrations: () -> Unit,
     spotifyConnected: Boolean,
-    ytMusicConnected: Boolean
+    ytMusicConnected: Boolean,
+    downloadStorageLocation: com.example.player.DownloadStorageLocation = com.example.player.DownloadStorageLocation.APP_INTERNAL,
+    onSelectDownloadStorageLocation: (com.example.player.DownloadStorageLocation) -> Unit = {},
+    downloadedTracksCount: Int = 0
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     var soonMessage by remember { mutableStateOf<String?>(null) }
@@ -101,6 +104,120 @@ fun SettingsScreen(
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Bold
                     )
+                }
+            }
+
+            // Storage & Download Location Section (2 Pilihan: Aplikasi Internal vs Penyimpanan HP .mp3)
+            item {
+                SettingsSectionHeader("Lokasi Penyimpanan Download Musik")
+                SettingsGroupCard {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(RoundedCornerShape(11.dp))
+                                    .background(Color(0xFFFFB74D).copy(alpha = 0.16f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.SdStorage,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFFB74D),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Pilih Lokasi Simpan Lagu Offline",
+                                    color = Color.White,
+                                    fontSize = 15.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (downloadedTracksCount > 0) {
+                                        "$downloadedTracksCount lagu terunduh • Otomatis dipindahkan saat lokasi diubah"
+                                    } else {
+                                        "Termasuk unduhan thumbnail offline & sinkronisasi hapus otomatis"
+                                    },
+                                    color = Color(0xFF9EA3B0),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        com.example.player.DownloadStorageLocation.entries.forEach { option ->
+                            val isSelected = downloadStorageLocation == option
+                            val optionTag = if (option == com.example.player.DownloadStorageLocation.APP_INTERNAL) {
+                                "storage_option_app_internal"
+                            } else {
+                                "storage_option_device_storage"
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 5.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(
+                                        if (isSelected) Color(0xFFFF4D6D).copy(alpha = 0.15f)
+                                        else Color(0xFF1A1B23)
+                                    )
+                                    .border(
+                                        width = if (isSelected) 1.4.dp else 1.dp,
+                                        color = if (isSelected) Color(0xFFFF4D6D) else Color.White.copy(alpha = 0.08f),
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
+                                    .clickable {
+                                        if (downloadStorageLocation != option) {
+                                            onSelectDownloadStorageLocation(option)
+                                        }
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                                    .testTag(optionTag),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (option == com.example.player.DownloadStorageLocation.APP_INTERNAL) {
+                                        Icons.Outlined.PhoneAndroid
+                                    } else {
+                                        Icons.Outlined.Folder
+                                    },
+                                    contentDescription = null,
+                                    tint = if (isSelected) Color(0xFFFF4D6D) else Color.White.copy(alpha = 0.75f),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = option.title,
+                                        color = Color.White,
+                                        fontSize = 14.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = option.subtitle,
+                                        color = Color(0xFFA6AAB8),
+                                        fontSize = 12.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Icon(
+                                    imageVector = if (isSelected) Icons.Filled.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
+                                    contentDescription = null,
+                                    tint = if (isSelected) Color(0xFFFF4D6D) else Color(0xFF6B7080),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -185,9 +302,17 @@ fun SettingsScreen(
                         icon = Icons.Outlined.SdStorage,
                         iconTint = Color(0xFFFFB74D),
                         title = "Storage & Offline Cache",
-                        subtitle = "Manage downloaded songs, image cache, and audio buffer",
-                        isSoon = true,
-                        onClick = { soonMessage = "Storage management coming soon!" }
+                        subtitle = "Aktif: ${downloadStorageLocation.title}",
+                        isSoon = false,
+                        activeBadgeText = if (downloadStorageLocation == com.example.player.DownloadStorageLocation.APP_INTERNAL) "Internal APK" else "Storage .mp3",
+                        onClick = {
+                            val next = if (downloadStorageLocation == com.example.player.DownloadStorageLocation.APP_INTERNAL) {
+                                com.example.player.DownloadStorageLocation.DEVICE_STORAGE
+                            } else {
+                                com.example.player.DownloadStorageLocation.APP_INTERNAL
+                            }
+                            onSelectDownloadStorageLocation(next)
+                        }
                     )
                     SettingsDivider()
                     SettingsRowItem(

@@ -135,6 +135,8 @@ fun LibraryScreen(
     subscribedArtists: List<SubscribedArtistItem> = emptyList(),
     recentTracks: List<MusicItem> = emptyList(),
     artistAvatarMap: Map<String, String> = emptyMap(),
+    hasAudioPermission: Boolean = true,
+    onAudioPermissionResult: (Boolean) -> Unit = {},
     onResolveArtistAvatar: (String, String?) -> Unit = { _, _ -> },
     onUpdateUsername: (String) -> Unit = {},
     onOpenLikedSongs: () -> Unit,
@@ -156,12 +158,80 @@ fun LibraryScreen(
     var showCreateDialog by remember { mutableStateOf(false) }
     var showEditUsernameDialog by remember { mutableStateOf(false) }
     var showAllPlaylistsSheet by remember { mutableStateOf(false) }
+    var showLocalMusicPermissionDialog by remember { mutableStateOf(false) }
     var playlistForMenu by remember { mutableStateOf<UserLibraryPlaylist?>(null) }
     var playlistForRename by remember { mutableStateOf<UserLibraryPlaylist?>(null) }
     var playlistForAddSongs by remember { mutableStateOf<UserLibraryPlaylist?>(null) }
 
     val context = LocalContext.current
     val currentUsername = listeningStats.userHandle.ifBlank { "user" }
+
+    val audioPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        onAudioPermissionResult(isGranted)
+    }
+
+    if (showLocalMusicPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = { showLocalMusicPermissionDialog = false },
+            containerColor = Color(0xFF18181F),
+            titleContentColor = Color.White,
+            textContentColor = Color(0xFFB8B8C4),
+            title = {
+                Text(
+                    text = "Konfirmasi Akses Penyimpanan",
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = Color.White
+                )
+            },
+            text = {
+                Text(
+                    text = "Izinkan aplikasi mengakses penyimpanan musik di HP Anda untuk memindai dan menampilkan semua lagu lokal secara otomatis di Local Music?",
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = Color(0xFFB8B8C4)
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showLocalMusicPermissionDialog = false
+                        val perm = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            android.Manifest.permission.READ_MEDIA_AUDIO
+                        } else {
+                            android.Manifest.permission.READ_EXTERNAL_STORAGE
+                        }
+                        audioPermissionLauncher.launch(perm)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4D6D)),
+                    modifier = Modifier.testTag("confirm_local_music_permission_button")
+                ) {
+                    Text(
+                        text = "Konfirmasi & Izinkan",
+                        fontFamily = PlusJakartaSans,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showLocalMusicPermissionDialog = false }
+                ) {
+                    Text(
+                        text = "Batal",
+                        fontFamily = PlusJakartaSans,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF9E9EA8)
+                    )
+                }
+            }
+        )
+    }
 
     // Compute circular artist avatars from Subscribed Artists + Played & Saved Songs,
     // prioritizing each artist's real scraped YouTube Music profile portrait from artistAvatarMap!
@@ -553,7 +623,13 @@ fun LibraryScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable(onClick = onOpenLocalMusic)
+                        .clickable {
+                            if (hasAudioPermission) {
+                                onOpenLocalMusic()
+                            } else {
+                                showLocalMusicPermissionDialog = true
+                            }
+                        }
                         .padding(horizontal = 16.dp, vertical = 15.dp)
                         .testTag("library_local_music_card"),
                     verticalAlignment = Alignment.CenterVertically
@@ -573,15 +649,19 @@ fun LibraryScreen(
                             fontSize = 16.sp,
                             color = Color(0xFFE6E6EA)
                         )
-                        if (localDeviceTracks.isNotEmpty()) {
-                            Text(
-                                text = "${localDeviceTracks.size} lagu di perangkat",
-                                fontFamily = PlusJakartaSans,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 12.sp,
-                                color = Color(0xFF8E8E95)
-                            )
-                        }
+                        Text(
+                            text = if (!hasAudioPermission) {
+                                "Ketuk untuk konfirmasi izin penyimpanan HP"
+                            } else if (localDeviceTracks.isNotEmpty()) {
+                                "${localDeviceTracks.size} lagu di penyimpanan HP"
+                            } else {
+                                "Pindai musik dari penyimpanan HP"
+                            },
+                            fontFamily = PlusJakartaSans,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = if (!hasAudioPermission) Color(0xFFFFB74D) else Color(0xFF8E8E95)
+                        )
                     }
                     Icon(
                         imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,

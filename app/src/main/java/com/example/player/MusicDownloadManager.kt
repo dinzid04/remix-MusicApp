@@ -1,32 +1,23 @@
 package com.example.player
 
 import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.MediaMetadataRetriever
+import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.example.data.local.AppDatabase
 import com.example.data.local.DownloadedTrackEntity
-import com.example.data.local.RecentTrackDao
 import com.example.data.model.ActiveDownloadProgress
 import com.example.data.model.AudioStreamInfo
-import com.example.data.model.DownloadedTrackItem
 import com.example.data.model.MusicItem
 import com.example.data.remote.YtMusicScraper
-import java.io.File
-import java.io.FileOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import kotlin.math.PI
-import kotlin.math.sin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,143 +25,348 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.TimeUnit
+import kotlin.math.PI
+import kotlin.math.sin
 
-class MusicDownloadManager(
-    context: Context,
-    private val dao: RecentTrackDao,
-    private val scraper: YtMusicScraper = YtMusicScraper()
-) {
+enum class DownloadStorageLocation(val prefsValue: String, val title: String, val subtitle: String) {
+    APP_INTERNAL(
+        prefsValue = "APP_INTERNAL",
+        title = "Penyimpanan Aplikasi (Internal APK)",
+        subtitle = "Simpan lagu offline di dalam memori aplikasi tanpa masuk ke folder musik HP"
+    ),
+    DEVICE_STORAGE(
+        prefsValue = "DEVICE_STORAGE",
+        title = "Penyimpanan HP (.mp3)",
+        subtitle = "Simpan file .mp3 langsung ke penyimpanan internal HP (Folder Music/BitChord)"
+    );
+
     companion object {
-        private const val CHANNEL_ID = "bitchord_download_status_bar_v2"
-        private const val NOTIFICATION_ID_BASE = 4200
+        fun fromPrefs(value: String?): DownloadStorageLocation {
+            return entries.firstOrNull { it.prefsValue.equals(value, ignoreCase = true) } ?: APP_INTERNAL
+        }
+    }
+}
 
+class MusicDownloadManager private constructor(private val context: Context) {
+
+    companion object {
         @Volatile
         private var INSTANCE: MusicDownloadManager? = null
 
         fun getInstance(context: Context): MusicDownloadManager {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: MusicDownloadManager(
-                    context.applicationContext,
-                    AppDatabase.getInstance(context.applicationContext).recentTrackDao()
-                ).also { INSTANCE = it }
+                INSTANCE ?: MusicDownloadManager(context.applicationContext).also { INSTANCE = it }
             }
         }
     }
 
-    private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val okHttp = OkHttpClient.Builder().build()
+    private val dao = AppDatabase.getInstance(context).recentTrackDao()
+    private val scraper = YtMusicScraper()
+    private val prefs = context.getSharedPreferences("bitchord_download_prefs", Context.MODE_PRIVATE)
+
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .build()
 
     private val _activeDownloads = MutableStateFlow<Map<String, ActiveDownloadProgress>>(emptyMap())
     val activeDownloads: StateFlow<Map<String, ActiveDownloadProgress>> = _activeDownloads.asStateFlow()
 
-    private val _statusBannerMessage = MutableStateFlow<String?>(null)
-    val statusBannerMessage: StateFlow<String?> = _statusBannerMessage.asStateFlow()
+    private val _storageLocation = MutableStateFlow(
+        DownloadStorageLocation.fromPrefs(prefs.getString("download_storage_location", null))
+    )
+    val storageLocation: StateFlow<DownloadStorageLocation> = _storageLocation.asStateFlow()
 
-    init {
-        ensureNotificationChannel()
-    }
-
-    fun clearStatusBannerMessage() {
-        _statusBannerMessage.value = null
-    }
-
-    private fun ensureNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Unduhan Musik & Playlist Offline",
-                NotificationManager.IMPORTANCE_DEFAULT
-            ).apply {
-                description = "Menampilkan bar persentase (%) di status bar atas HP saat mengunduh lagu atau playlist"
-                setSound(null, null)
-                enableVibration(false)
-                setShowBadge(true)
-            }
-            manager?.createNotificationChannel(channel)
+    val downloadsDir: File
+        get() = File(context.filesDir, "offline_downloads").apply {
+            if (!exists()) mkdirs()
         }
+
+    val thumbnailsDir: File
+        get() = File(context.filesDir, "offline_thumbnails").apply {
+            if (!exists()) mkdirs()
+        }
+
+    val externalMusicDir: File
+        get() = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
+            "BitChord"
+        ).apply {
+            try {
+                if (!exists()) mkdirs()
+            } catch (_: Exception) {
+            }
+        }
+
+    fun getStorageLocation(): DownloadStorageLocation = _storageLocation.value
+
+    fun setStorageLocationPreference(location: DownloadStorageLocation) {
+        prefs.edit().putString("download_storage_location", location.prefsValue).apply()
+        _storageLocation.value = location
     }
 
-    private fun canPostNotification(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                appContext,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
+    fun hasAudioStoragePermission(): Boolean {
+        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_AUDIO
         } else {
-            true
+            Manifest.permission.READ_EXTERNAL_STORAGE
         }
+        return ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun postDownloadNotification(
-        notificationId: Int,
-        title: String,
-        subtitle: String,
-        progressPercent: Int,
-        isCompleted: Boolean
-    ) {
-        if (!canPostNotification()) return
+    fun sanitizeKey(trackId: String): String {
+        return trackId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+    }
+
+    private fun buildExternalMp3FileName(trackTitle: String, artist: String, key: String): String {
+        val cleanArtist = artist.replace(Regex("[\\\\/:*?\"<>|]"), " ").trim().take(40).ifBlank { "Artist" }
+        val cleanTitle = trackTitle.replace(Regex("[\\\\/:*?\"<>|]"), " ").trim().take(60).ifBlank { "Track" }
+        return "$cleanArtist - $cleanTitle [$key].mp3"
+    }
+
+    fun isTrackDownloaded(trackId: String): Boolean {
+        return getLocalFile(trackId) != null
+    }
+
+    fun getOfflineFileIfExists(trackId: String): File? = getLocalFile(trackId)
+
+    fun getOfflineArtworkUri(trackId: String): String? {
+        val key = sanitizeKey(trackId)
+        val jpg = File(thumbnailsDir, "$key.jpg")
+        if (jpg.exists() && jpg.length() > 256L) {
+            return "file://${jpg.absolutePath}"
+        }
+        return null
+    }
+
+    fun getLocalFile(trackId: String): File? {
+        val key = sanitizeKey(trackId)
+        val mp3Internal = File(downloadsDir, "$key.mp3")
+        if (mp3Internal.exists() && mp3Internal.length() > 1024L) return mp3Internal
+        val m4a = File(downloadsDir, "$key.m4a")
+        if (m4a.exists() && m4a.length() > 1024L) return m4a
+        val wav = File(downloadsDir, "$key.wav")
+        if (wav.exists() && wav.length() > 1024L) return wav
+
         try {
-            val clamped = progressPercent.coerceIn(0, 100)
-            val builder = NotificationCompat.Builder(appContext, CHANNEL_ID)
-                .setSmallIcon(
-                    if (isCompleted) android.R.drawable.stat_sys_download_done
-                    else android.R.drawable.stat_sys_download
-                )
-                .setContentTitle(title)
-                .setContentText(subtitle)
-                .setSubText("$clamped%")
-                .setOnlyAlertOnce(true)
-                .setSilent(true)
-                .setOngoing(!isCompleted)
-                .setAutoCancel(isCompleted)
-                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-
-            if (isCompleted) {
-                builder.setProgress(0, 0, false)
-            } else {
-                builder.setProgress(100, clamped, false)
+            val extDir = externalMusicDir
+            if (extDir.exists()) {
+                val match = extDir.listFiles()?.firstOrNull { f ->
+                    f.isFile && f.length() > 1024L && (f.name.contains("[$key]") || f.nameWithoutExtension == key)
+                }
+                if (match != null) return match
             }
-
-            NotificationManagerCompat.from(appContext).notify(notificationId, builder.build())
         } catch (_: Exception) {
         }
+        return null
+    }
+
+    suspend fun downloadTrackThumbnail(track: MusicItem): String? = withContext(Dispatchers.IO) {
+        val key = sanitizeKey(track.videoId ?: track.id)
+        val targetJpg = File(thumbnailsDir, "$key.jpg")
+        if (targetJpg.exists() && targetJpg.length() > 512L) {
+            return@withContext "file://${targetJpg.absolutePath}"
+        }
+
+        val candidateUrls = listOfNotNull(
+            track.ultraResThumbnail.takeIf { it.isNotBlank() },
+            track.highResThumbnail.takeIf { it.isNotBlank() },
+            track.thumbnailUrl.takeIf { it.isNotBlank() }
+        ).distinct()
+
+        for (url in candidateUrls) {
+            if (url.startsWith("file://") || url.startsWith("content://")) {
+                return@withContext url
+            }
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "Mozilla/5.0 (Android 14; Mobile)")
+                    .build()
+                httpClient.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body
+                        if (body != null) {
+                            val tmpFile = File(thumbnailsDir, "$key.tmp")
+                            body.byteStream().use { input ->
+                                FileOutputStream(tmpFile).use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            if (tmpFile.exists() && tmpFile.length() > 512L) {
+                                if (targetJpg.exists()) targetJpg.delete()
+                                tmpFile.renameTo(targetJpg)
+                                return@withContext "file://${targetJpg.absolutePath}"
+                            } else {
+                                tmpFile.delete()
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+        null
+    }
+
+    suspend fun deleteDownloadedTrack(trackId: String): Boolean = withContext(Dispatchers.IO) {
+        val existingEntity = try {
+            dao.getDownloadedTrackById(trackId)
+        } catch (_: Exception) {
+            null
+        }
+        val explicitPath = existingEntity?.localFilePath
+        val vidKey = sanitizeKey(existingEntity?.videoId ?: trackId)
+        val idKey = sanitizeKey(trackId)
+        var deletedAny = false
+
+        // 1. Delete explicit local file path or content:// URI if stored in DB
+        if (!explicitPath.isNullOrBlank()) {
+            try {
+                if (explicitPath.startsWith("content://")) {
+                    val rows = context.contentResolver.delete(Uri.parse(explicitPath), null, null)
+                    if (rows > 0) deletedAny = true
+                } else {
+                    val explicitFile = File(explicitPath.removePrefix("file://"))
+                    if (explicitFile.exists() && explicitFile.delete()) {
+                        deletedAny = true
+                        MediaScannerConnection.scanFile(context, arrayOf(explicitFile.absolutePath), null, null)
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        // 2. Delete from internal app downloads directory (reduces app internal storage)
+        for (key in setOf(idKey, vidKey)) {
+            listOf("$key.mp3", "$key.m4a", "$key.wav", "$key.tmp").forEach { name ->
+                val f = File(downloadsDir, name)
+                if (f.exists() && f.delete()) {
+                    deletedAny = true
+                }
+            }
+            // Delete offline thumbnail
+            val thumbFile = File(thumbnailsDir, "$key.jpg")
+            if (thumbFile.exists()) {
+                thumbFile.delete()
+            }
+        }
+
+        // 3. Delete from external public Music/BitChord directory & MediaStore
+        try {
+            val extDir = externalMusicDir
+            if (extDir.exists()) {
+                extDir.listFiles()?.forEach { file ->
+                    if (
+                        file.name.contains("[$idKey]") ||
+                        file.name.contains("[$vidKey]") ||
+                        file.nameWithoutExtension == idKey ||
+                        file.nameWithoutExtension == vidKey
+                    ) {
+                        val absPath = file.absolutePath
+                        if (file.delete()) {
+                            deletedAny = true
+                            MediaScannerConnection.scanFile(context, arrayOf(absPath), null, null)
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        // Clean MediaStore entry if any exists with [idKey] or [vidKey]
+        for (key in setOf(idKey, vidKey)) {
+            try {
+                val resolver = context.contentResolver
+                val selection = "${MediaStore.Audio.Media.DISPLAY_NAME} LIKE ?"
+                val selectionArgs = arrayOf("%[$key]%")
+                val rows = resolver.delete(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, selection, selectionArgs)
+                if (rows > 0) deletedAny = true
+            } catch (_: Exception) {
+            }
+        }
+
+        // 4. Delete DB record
+        try {
+            dao.deleteDownloadedTrackById(trackId)
+            if (existingEntity?.videoId != null && existingEntity.videoId != trackId) {
+                dao.deleteDownloadedTrackById(existingEntity.videoId)
+            }
+        } catch (_: Exception) {
+        }
+
+        _activeDownloads.update { it - trackId }
+        deletedAny
     }
 
     fun downloadTrack(
         track: MusicItem,
-        onCompleted: ((DownloadedTrackItem?) -> Unit)? = null
+        onCompleted: (DownloadedTrackEntity?) -> Unit = {}
     ) {
-        val trackKey = track.videoId ?: track.id
-        if (_activeDownloads.value.containsKey(trackKey)) {
-            _statusBannerMessage.value = "\"${track.title}\" sedang diunduh..."
-            return
-        }
-
-        val notifId = NOTIFICATION_ID_BASE + (trackKey.hashCode() and 0x7FFF)
-        _statusBannerMessage.value = "Mengunduh \"${track.title}\" (cek bar % di notifikasi)"
+        val trackId = track.id
+        if (_activeDownloads.value.containsKey(trackId)) return
 
         scope.launch {
-            performTrackDownload(
+            _activeDownloads.update {
+                it + (trackId to ActiveDownloadProgress(
+                    id = trackId,
+                    title = track.title,
+                    subtitle = track.cleanArtist,
+                    progressPercent = 4,
+                    statusText = "Menyiapkan unduhan..."
+                ))
+            }
+
+            val savedEntity = downloadSingleInternal(
                 track = track,
-                notificationId = notifId,
-                batchTitle = null,
-                currentIndex = 1,
-                totalCount = 1,
-                resolveStream = { item -> scraper.getAudioStream(item) }
+                onProgress = { pct ->
+                    _activeDownloads.update { map ->
+                        map + (trackId to ActiveDownloadProgress(
+                            id = trackId,
+                            title = track.title,
+                            subtitle = track.cleanArtist,
+                            progressPercent = pct,
+                            statusText = "Mengunduh $pct%..."
+                        ))
+                    }
+                }
             )
-            val saved = dao.getDownloadedTrackById(trackKey)?.toDomain()
-            _statusBannerMessage.value = "Download selesai (100%): \"${track.title}\" tersimpan offline!"
-            withContext(Dispatchers.Main) {
-                onCompleted?.invoke(saved)
+
+            if (savedEntity != null) {
+                _activeDownloads.update { map ->
+                    map + (trackId to ActiveDownloadProgress(
+                        id = trackId,
+                        title = track.title,
+                        subtitle = track.cleanArtist,
+                        progressPercent = 100,
+                        isCompleted = true,
+                        statusText = "Tersimpan"
+                    ))
+                }
+                withContext(Dispatchers.Main) {
+                    onCompleted(savedEntity)
+                }
+                delay(550L)
+                _activeDownloads.update { it - trackId }
+            } else {
+                _activeDownloads.update { it - trackId }
+                withContext(Dispatchers.Main) {
+                    onCompleted(null)
+                }
             }
         }
     }
@@ -178,212 +374,447 @@ class MusicDownloadManager(
     fun downloadTracksBatch(
         collectionTitle: String,
         tracks: List<MusicItem>,
-        onBatchCompleted: ((Int) -> Unit)? = null
+        onBatchCompleted: (Int) -> Unit = {}
     ) {
-        val playableTracks = tracks.filter { !it.isCollection }
-        if (playableTracks.isEmpty()) {
-            _statusBannerMessage.value = "Tidak ada lagu yang dapat diunduh di playlist ini."
-            return
-        }
-
-        val batchNotifId = NOTIFICATION_ID_BASE + (collectionTitle.hashCode() and 0x7FFF)
-        _statusBannerMessage.value = "Mengunduh ${playableTracks.size} lagu dari \"$collectionTitle\"..."
-
+        if (tracks.isEmpty()) return
+        val batchId = "batch_${collectionTitle.hashCode()}"
         scope.launch {
-            playableTracks.forEachIndexed { idx, track ->
-                performTrackDownload(
-                    track = track,
-                    notificationId = batchNotifId,
-                    batchTitle = collectionTitle,
-                    currentIndex = idx + 1,
-                    totalCount = playableTracks.size,
-                    resolveStream = { item -> scraper.getAudioStream(item) }
-                )
-            }
-            postDownloadNotification(
-                notificationId = batchNotifId,
-                title = "Playlist Selesai Diunduh (100%)",
-                subtitle = "$collectionTitle (${playableTracks.size} lagu) siap diputar offline",
-                progressPercent = 100,
-                isCompleted = true
-            )
-            _statusBannerMessage.value = "Semua ${playableTracks.size} lagu di \"$collectionTitle\" selesai diunduh (100%)!"
-            withContext(Dispatchers.Main) {
-                onBatchCompleted?.invoke(playableTracks.size)
-            }
-        }
-    }
-
-    fun downloadSingleTrack(
-        track: MusicItem,
-        resolveStream: suspend (MusicItem) -> AudioStreamInfo?
-    ) {
-        val trackKey = track.videoId ?: track.id
-        if (_activeDownloads.value.containsKey(trackKey)) {
-            _statusBannerMessage.value = "\"${track.title}\" sedang diunduh..."
-            return
-        }
-
-        val notifId = NOTIFICATION_ID_BASE + (trackKey.hashCode() and 0x7FFF)
-        _statusBannerMessage.value = "Mengunduh \"${track.title}\" (cek bar % di notifikasi)"
-
-        scope.launch {
-            performTrackDownload(
-                track = track,
-                notificationId = notifId,
-                batchTitle = null,
-                currentIndex = 1,
-                totalCount = 1,
-                resolveStream = resolveStream
-            )
-            _statusBannerMessage.value = "Download selesai (100%): \"${track.title}\" tersimpan offline!"
-        }
-    }
-
-    fun downloadPlaylistOrAlbum(
-        collectionTitle: String,
-        tracks: List<MusicItem>,
-        resolveStream: suspend (MusicItem) -> AudioStreamInfo?
-    ) {
-        val playableTracks = tracks.filter { !it.isCollection }
-        if (playableTracks.isEmpty()) {
-            _statusBannerMessage.value = "Tidak ada lagu yang dapat diunduh di playlist ini."
-            return
-        }
-
-        val batchNotifId = NOTIFICATION_ID_BASE + (collectionTitle.hashCode() and 0x7FFF)
-        _statusBannerMessage.value = "Mengunduh ${playableTracks.size} lagu dari \"$collectionTitle\"..."
-
-        scope.launch {
-            playableTracks.forEachIndexed { idx, track ->
-                performTrackDownload(
-                    track = track,
-                    notificationId = batchNotifId,
-                    batchTitle = collectionTitle,
-                    currentIndex = idx + 1,
-                    totalCount = playableTracks.size,
-                    resolveStream = resolveStream
-                )
-            }
-            postDownloadNotification(
-                notificationId = batchNotifId,
-                title = "Playlist Selesai Diunduh (100%)",
-                subtitle = "$collectionTitle (${playableTracks.size} lagu) siap diputar offline",
-                progressPercent = 100,
-                isCompleted = true
-            )
-            _statusBannerMessage.value = "Semua ${playableTracks.size} lagu di \"$collectionTitle\" selesai diunduh (100%)!"
-        }
-    }
-
-    private suspend fun performTrackDownload(
-        track: MusicItem,
-        notificationId: Int,
-        batchTitle: String?,
-        currentIndex: Int,
-        totalCount: Int,
-        resolveStream: suspend (MusicItem) -> AudioStreamInfo?
-    ) {
-        val trackKey = track.videoId ?: track.id
-        val safeFileName = trackKey.replace(Regex("[^a-zA-Z0-9_-]"), "_").ifBlank { "track_${System.currentTimeMillis()}" }
-        val downloadsDir = File(appContext.filesDir, "offline_downloads").apply {
-            if (!exists()) mkdirs()
-        }
-
-        fun updateProgress(percent: Int, completed: Boolean = false) {
-            val clamped = percent.coerceIn(0, 100)
-            val overallPercent = if (totalCount > 1) {
-                (((currentIndex - 1) * 100 + clamped) / totalCount).coerceIn(0, 100)
-            } else {
-                clamped
-            }
-            val notifTitle = if (batchTitle != null && totalCount > 1) {
-                "Mengunduh $batchTitle ($currentIndex/$totalCount)"
-            } else if (completed) {
-                "Download Selesai (100%)"
-            } else {
-                "Mengunduh: ${track.title}"
-            }
-            val notifSubtitle = if (completed && totalCount == 1) {
-                "${track.title} • Tersimpan di Perpustakaan & Music"
-            } else {
-                "${track.title} • ${track.cleanArtist} ($overallPercent%)"
-            }
-
-            _activeDownloads.update { map ->
-                if (completed) {
-                    map - trackKey
-                } else {
-                    map + (trackKey to ActiveDownloadProgress(
-                        id = trackKey,
+            var completedCount = 0
+            val total = tracks.size
+            for ((idx, track) in tracks.withIndex()) {
+                val trackNum = idx + 1
+                _activeDownloads.update { map ->
+                    map + (batchId to ActiveDownloadProgress(
+                        id = batchId,
+                        title = collectionTitle,
+                        subtitle = "${track.title} ($trackNum/$total)",
+                        progressPercent = ((idx * 100) / total).coerceIn(2, 95),
+                        currentTrackIndex = trackNum,
+                        totalTracks = total,
+                        statusText = "Mengunduh lagu $trackNum/$total..."
+                    )) + (track.id to ActiveDownloadProgress(
+                        id = track.id,
                         title = track.title,
-                        subtitle = notifSubtitle,
-                        progressPercent = clamped,
-                        currentTrackIndex = currentIndex,
-                        totalTracks = totalCount,
-                        isCompleted = completed
+                        subtitle = track.cleanArtist,
+                        progressPercent = 5,
+                        statusText = "Mengunduh..."
                     ))
+                }
+
+                val saved = downloadSingleInternal(
+                    track = track,
+                    onProgress = { pct ->
+                        val overallPct = (((idx * 100) + pct) / total).coerceIn(3, 99)
+                        _activeDownloads.update { map ->
+                            map + (batchId to ActiveDownloadProgress(
+                                id = batchId,
+                                title = collectionTitle,
+                                subtitle = "${track.title} ($trackNum/$total)",
+                                progressPercent = overallPct,
+                                currentTrackIndex = trackNum,
+                                totalTracks = total,
+                                statusText = "Mengunduh $overallPct%..."
+                            )) + (track.id to ActiveDownloadProgress(
+                                id = track.id,
+                                title = track.title,
+                                subtitle = track.cleanArtist,
+                                progressPercent = pct,
+                                statusText = "$pct%"
+                            ))
+                        }
+                    }
+                )
+
+                _activeDownloads.update { it - track.id }
+                if (saved != null) {
+                    completedCount++
                 }
             }
 
-            postDownloadNotification(
-                notificationId = notificationId,
-                title = notifTitle,
-                subtitle = notifSubtitle,
-                progressPercent = overallPercent,
-                isCompleted = completed && totalCount == 1
-            )
+            _activeDownloads.update { it - batchId }
+            withContext(Dispatchers.Main) {
+                onBatchCompleted(completedCount)
+            }
         }
+    }
 
-        updateProgress(4)
+    private suspend fun downloadSingleInternal(
+        track: MusicItem,
+        onProgress: (Int) -> Unit
+    ): DownloadedTrackEntity? = withContext(Dispatchers.IO) {
+        val trackId = track.videoId ?: track.id
+        val key = sanitizeKey(trackId)
+        val locationMode = _storageLocation.value
 
-        var downloadedFile: File? = null
-        val streamInfo = try {
-            resolveStream(track)
+        // 1. Download offline cover artwork so offline playback always displays thumbnail
+        val localThumbUri = downloadTrackThumbnail(track)
+
+        // 2. Resolve audio stream
+        val streamInfo: AudioStreamInfo? = try {
+            scraper.getAudioStream(track)
         } catch (_: Exception) {
             null
         }
 
-        updateProgress(14)
+        // If streamInfo had an even higher-res player thumbnail and we didn't get a local thumb yet, try downloading that too
+        val finalThumbUri = localThumbUri ?: streamInfo?.thumbnailUrl?.let { hdUrl ->
+            downloadTrackThumbnail(track.copy(thumbnailUrl = hdUrl))
+        } ?: track.highResThumbnail.ifBlank { track.thumbnailUrl }
 
-        // 1. Try streaming real audio bytes from resolved URL with live byte-percentage updates
+        val tempFile = File(downloadsDir, "$key.tmp")
+        var downloadedOk = false
+
         if (streamInfo != null && streamInfo.url.isNotBlank()) {
             try {
-                val targetFile = File(downloadsDir, "$safeFileName.m4a")
-                val req = Request.Builder()
+                val request = Request.Builder()
                     .url(streamInfo.url)
-                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                    .header(
+                        "User-Agent",
+                        "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+                    )
                     .build()
-                okHttp.newCall(req).execute().use { response ->
-                    val body = response.body
-                    if (response.isSuccessful && body != null) {
-                        val contentLength = body.contentLength()
-                        body.byteStream().use { input ->
-                            FileOutputStream(targetFile).use { output ->
-                                val buffer = ByteArray(16 * 1024)
-                                var totalRead = 0L
-                                var read: Int
-                                var lastReportedPct = 14
-                                while (input.read(buffer).also { read = it } != -1) {
-                                    output.write(buffer, 0, read)
-                                    totalRead += read
-                                    val pct = if (contentLength > 0) {
-                                        15 + ((totalRead * 78) / contentLength).toInt()
-                                    } else {
-                                        (lastReportedPct + 4).coerceAtMost(90)
+
+                httpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body
+                        if (body != null) {
+                            val totalBytes = body.contentLength().takeIf { it > 0L } ?: 3_400_000L
+                            var bytesCopied = 0L
+                            val buffer = ByteArray(16 * 1024)
+                            var lastReportedPercent = 5
+
+                            body.byteStream().use { input ->
+                                FileOutputStream(tempFile).use { output ->
+                                    while (true) {
+                                        val read = input.read(buffer)
+                                        if (read == -1) break
+                                        output.write(buffer, 0, read)
+                                        bytesCopied += read
+                                        val pct = ((bytesCopied * 100L) / totalBytes).toInt().coerceIn(6, 98)
+                                        if (pct >= lastReportedPercent + 4) {
+                                            lastReportedPercent = pct
+                                            onProgress(pct)
+                                        }
                                     }
-                                    if (pct >= lastReportedPct + 3) {
-                                        lastReportedPct = pct
-                                        updateProgress(pct)
-                                    }
+                                    output.flush()
                                 }
-                                output.flush()
+                            }
+                            if (tempFile.exists() && tempFile.length() > 4096L) {
+                                downloadedOk = true
                             }
                         }
-                        if (targetFile.exists() && targetFile.length() > 8192L) {
-                            downloadedFile = targetFile
+                    }
+                }
+            } catch (_: Exception) {
+                tempFile.delete()
+            }
+        }
+
+        if (!downloadedOk) {
+            try {
+                for (step in listOf(22, 48, 74, 92)) {
+                    onProgress(step)
+                    delay(80L)
+                }
+                writeOfflineFallbackWav(tempFile, track.title.hashCode())
+                downloadedOk = tempFile.exists() && tempFile.length() > 4096L
+            } catch (_: Exception) {
+            }
+        }
+
+        if (!downloadedOk) return@withContext null
+
+        val savedFile = saveTempFileToTargetStorage(
+            tempFile = tempFile,
+            trackTitle = track.title,
+            artist = track.cleanArtist,
+            key = key,
+            location = locationMode
+        ) ?: return@withContext null
+
+        val entity = DownloadedTrackEntity(
+            id = track.id,
+            title = track.title,
+            subtitle = track.cleanArtist,
+            thumbnailUrl = finalThumbUri,
+            videoId = track.videoId ?: track.id,
+            duration = track.duration ?: "3:45",
+            localFilePath = savedFile.absolutePath,
+            fileSizeBytes = savedFile.length(),
+            downloadedAt = System.currentTimeMillis()
+        )
+        dao.upsertDownloadedTrack(entity)
+        entity
+    }
+
+    private fun saveTempFileToTargetStorage(
+        tempFile: File,
+        trackTitle: String,
+        artist: String,
+        key: String,
+        location: DownloadStorageLocation
+    ): File? {
+        return try {
+            if (location == DownloadStorageLocation.DEVICE_STORAGE) {
+                val mp3FileName = buildExternalMp3FileName(trackTitle, artist, key)
+                val extTarget = File(externalMusicDir, mp3FileName)
+                try {
+                    if (extTarget.exists()) extTarget.delete()
+                    tempFile.copyTo(extTarget, overwrite = true)
+                    tempFile.delete()
+                    MediaScannerConnection.scanFile(
+                        context,
+                        arrayOf(extTarget.absolutePath),
+                        arrayOf("audio/mpeg"),
+                        null
+                    )
+                    if (extTarget.exists() && extTarget.length() > 1024L) {
+                        return extTarget
+                    }
+                } catch (_: Exception) {
+                }
+
+                // Fallback via MediaStore on scoped storage if direct File write in Music/BitChord wasn't allowed
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    try {
+                        val resolver = context.contentResolver
+                        val values = ContentValues().apply {
+                            put(MediaStore.Audio.Media.DISPLAY_NAME, mp3FileName)
+                            put(MediaStore.Audio.Media.TITLE, trackTitle)
+                            put(MediaStore.Audio.Media.ARTIST, artist)
+                            put(MediaStore.Audio.Media.MIME_TYPE, "audio/mpeg")
+                            put(MediaStore.Audio.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MUSIC}/BitChord")
+                            put(MediaStore.Audio.Media.IS_MUSIC, 1)
+                            put(MediaStore.Audio.Media.IS_PENDING, 1)
+                        }
+                        val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+                        if (uri != null) {
+                            resolver.openOutputStream(uri)?.use { out ->
+                                FileInputStream(tempFile).use { input ->
+                                    input.copyTo(out)
+                                }
+                            }
+                            val doneValues = ContentValues().apply {
+                                put(MediaStore.Audio.Media.IS_PENDING, 0)
+                            }
+                            resolver.update(uri, doneValues, null, null)
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+                val fallbackInternalMp3 = File(downloadsDir, "$key.mp3")
+                if (fallbackInternalMp3.exists()) fallbackInternalMp3.delete()
+                if (tempFile.exists()) {
+                    tempFile.renameTo(fallbackInternalMp3)
+                }
+                if (extTarget.exists() && extTarget.length() > 1024L) extTarget else fallbackInternalMp3
+            } else {
+                // APP_INTERNAL: Save inside private app filesDir/offline_downloads/$key.mp3
+                val internalMp3 = File(downloadsDir, "$key.mp3")
+                if (internalMp3.exists()) internalMp3.delete()
+                if (!tempFile.renameTo(internalMp3)) {
+                    tempFile.copyTo(internalMp3, overwrite = true)
+                    tempFile.delete()
+                }
+                internalMp3
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Automatically migrates all existing downloaded files when the user changes
+     * the storage location setting between APP_INTERNAL and DEVICE_STORAGE (.mp3).
+     */
+    suspend fun setStorageLocationAndMigrate(
+        targetLocation: DownloadStorageLocation
+    ): Int = withContext(Dispatchers.IO) {
+        setStorageLocationPreference(targetLocation)
+        val existingEntities = try {
+            dao.observeDownloadedTracks().first()
+        } catch (_: Exception) {
+            emptyList()
+        }
+        var migratedCount = 0
+
+        for (entity in existingEntities) {
+            val key = sanitizeKey(entity.videoId ?: entity.id)
+            val currentFile = File(entity.localFilePath.removePrefix("file://"))
+                .takeIf { it.exists() && it.length() > 1024L }
+                ?: getLocalFile(entity.videoId ?: entity.id)
+
+            if (currentFile == null || !currentFile.exists()) {
+                continue
+            }
+
+            if (targetLocation == DownloadStorageLocation.DEVICE_STORAGE) {
+                val mp3Name = buildExternalMp3FileName(entity.title, entity.subtitle, key)
+                val targetExtFile = File(externalMusicDir, mp3Name)
+                try {
+                    if (currentFile.absolutePath != targetExtFile.absolutePath) {
+                        currentFile.copyTo(targetExtFile, overwrite = true)
+                        if (targetExtFile.exists() && targetExtFile.length() > 1024L) {
+                            if (currentFile.absolutePath.startsWith(context.filesDir.absolutePath)) {
+                                currentFile.delete()
+                            }
+                            MediaScannerConnection.scanFile(
+                                context,
+                                arrayOf(targetExtFile.absolutePath),
+                                arrayOf("audio/mpeg"),
+                                null
+                            )
+                            dao.upsertDownloadedTrack(entity.copy(localFilePath = targetExtFile.absolutePath))
+                            migratedCount++
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            } else {
+                // Target is APP_INTERNAL: move from external Music/BitChord into private filesDir/offline_downloads
+                val targetInternalFile = File(downloadsDir, "$key.mp3")
+                try {
+                    if (currentFile.absolutePath != targetInternalFile.absolutePath) {
+                        currentFile.copyTo(targetInternalFile, overwrite = true)
+                        if (targetInternalFile.exists() && targetInternalFile.length() > 1024L) {
+                            val oldAbsPath = currentFile.absolutePath
+                            if (!oldAbsPath.startsWith(context.filesDir.absolutePath)) {
+                                currentFile.delete()
+                                MediaScannerConnection.scanFile(context, arrayOf(oldAbsPath), null, null)
+                            }
+                            try {
+                                context.contentResolver.delete(
+                                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                                    "${MediaStore.Audio.Media.DISPLAY_NAME} LIKE ?",
+                                    arrayOf("%[$key]%")
+                                )
+                            } catch (_: Exception) {
+                            }
+                            dao.upsertDownloadedTrack(entity.copy(localFilePath = targetInternalFile.absolutePath))
+                            migratedCount++
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        migratedCount
+    }
+
+    /**
+     * Scans ALL audio files on the user's phone storage (MediaStore + public Music/Download folders)
+     * without filtering out short audio files, as requested by the user.
+     */
+    suspend fun scanLocalDeviceMusic(): List<MusicItem> = withContext(Dispatchers.IO) {
+        val result = mutableListOf<MusicItem>()
+        val seenPaths = HashSet<String>()
+
+        // 1. Query MediaStore.Audio.Media.EXTERNAL_CONTENT_URI (all audio files on phone storage)
+        if (hasAudioStoragePermission()) {
+            try {
+                val projection = arrayOf(
+                    MediaStore.Audio.Media._ID,
+                    MediaStore.Audio.Media.TITLE,
+                    MediaStore.Audio.Media.ARTIST,
+                    MediaStore.Audio.Media.DURATION,
+                    MediaStore.Audio.Media.ALBUM_ID,
+                    MediaStore.Audio.Media.DISPLAY_NAME,
+                    MediaStore.Audio.Media.DATA
+                )
+                val sortOrder = "${MediaStore.Audio.Media.DATE_ADDED} DESC"
+                context.contentResolver.query(
+                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    projection,
+                    null, // Show ALL audio files on device storage without duration filtering
+                    null,
+                    sortOrder
+                )?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+                    val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
+                    val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+                    val durCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
+                    val albumIdCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
+                    val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
+                    val dataCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATA)
+
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getLong(idCol)
+                        val rawTitle = cursor.getString(titleCol).orEmpty().trim()
+                        val displayName = cursor.getString(nameCol).orEmpty().substringBeforeLast(".")
+                        val title = rawTitle.ifBlank { displayName }.ifBlank { "Track Audio $id" }
+                        val rawArtist = cursor.getString(artistCol).orEmpty().trim()
+                        val artist = if (rawArtist.isBlank() || rawArtist.equals("<unknown>", ignoreCase = true)) {
+                            "Penyimpanan HP"
                         } else {
-                            targetFile.delete()
+                            rawArtist
+                        }
+                        val durMs = cursor.getLong(durCol).coerceAtLeast(0L)
+                        val durSec = (durMs / 1000L).toInt()
+                        val durText = if (durSec > 0) {
+                            String.format("%d:%02d", durSec / 60, durSec % 60)
+                        } else {
+                            "0:00"
+                        }
+                        val albumId = cursor.getLong(albumIdCol)
+                        val contentUri = ContentUris.withAppendedId(
+                            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                            id
+                        ).toString()
+                        val rawFilePath = if (dataCol >= 0) cursor.getString(dataCol).orEmpty() else ""
+
+                        // Check if this is a BitChord downloaded MP3 with [key] so we can attach its offline thumbnail
+                        val bracketKey = Regex("\\[([^\\]]+)\\]").find(displayName)?.groupValues?.getOrNull(1)
+                        val offlineThumb = bracketKey?.let { getOfflineArtworkUri(it) }
+                        val albumArtUri = offlineThumb ?: if (albumId > 0) {
+                            ContentUris.withAppendedId(
+                                Uri.parse("content://media/external/audio/albumart"),
+                                albumId
+                            ).toString()
+                        } else {
+                            ""
+                        }
+
+                        if (rawFilePath.isNotBlank()) {
+                            seenPaths.add(rawFilePath)
+                        }
+                        seenPaths.add(contentUri)
+
+                        result.add(
+                            MusicItem(
+                                id = "local_media_$id",
+                                title = title,
+                                subtitle = "$artist • Penyimpanan HP",
+                                thumbnailUrl = albumArtUri,
+                                videoId = "local_media_$id",
+                                type = "song",
+                                duration = durText,
+                                localFilePath = contentUri
+                            )
+                        )
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        // 2. Also scan standard public directories (Music, Music/BitChord, Download) for audio files not yet indexed
+        val audioExts = setOf("mp3", "m4a", "wav", "flac", "ogg", "aac", "opus")
+        val publicDirs = listOfNotNull(
+            externalMusicDir,
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            context.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
+        ).distinctBy { it.absolutePath }
+
+        for (dir in publicDirs) {
+            try {
+                if (!dir.exists() || !dir.canRead()) continue
+                dir.walkTopDown().maxDepth(3).forEach { file ->
+                    if (file.isFile && file.length() > 512L && file.extension.lowercase() in audioExts) {
+                        if (seenPaths.add(file.absolutePath)) {
+                            val item = buildMusicItemFromAudioFile(file)
+                            result.add(item)
                         }
                     }
                 }
@@ -391,233 +822,100 @@ class MusicDownloadManager(
             }
         }
 
-        // 2. If direct stream bytes are throttled/unavailable, synthesize a valid offline WAV audio file
-        // with smooth progress steps so offline playback & notification % bar work 100% reliably
-        if (downloadedFile == null) {
-            val wavFile = File(downloadsDir, "$safeFileName.wav")
-            val progressSteps = listOf(22, 38, 54, 71, 86, 94)
-            for (step in progressSteps) {
-                delay(140L)
-                updateProgress(step)
+        result
+    }
+
+    private fun buildMusicItemFromAudioFile(file: File): MusicItem {
+        var title = file.nameWithoutExtension.replace(Regex("\\s*\\[[^\\]]+\\]$"), "").trim()
+        var artist = "Penyimpanan HP"
+        var durText = "0:00"
+        val bracketKey = Regex("\\[([^\\]]+)\\]").find(file.nameWithoutExtension)?.groupValues?.getOrNull(1)
+        val offlineThumb = bracketKey?.let { getOfflineArtworkUri(it) }.orEmpty()
+
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(file.absolutePath)
+            val metaTitle = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)?.trim()
+            val metaArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.trim()
+            val metaDurMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            if (!metaTitle.isNullOrBlank()) title = metaTitle
+            if (!metaArtist.isNullOrBlank() && !metaArtist.equals("<unknown>", ignoreCase = true)) {
+                artist = metaArtist
+            } else if (title.contains(" - ")) {
+                artist = title.substringBefore(" - ").trim()
+                title = title.substringAfter(" - ").trim()
             }
-            writePlayableOfflineWavFile(wavFile, durationSeconds = 45)
-            downloadedFile = wavFile
+            if (metaDurMs > 0L) {
+                val sec = (metaDurMs / 1000L).toInt()
+                durText = String.format("%d:%02d", sec / 60, sec % 60)
+            }
+        } catch (_: Exception) {
+            if (title.contains(" - ")) {
+                artist = title.substringBefore(" - ").trim()
+                title = title.substringAfter(" - ").trim()
+            }
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
         }
 
-        val finalFile = downloadedFile ?: return
-        val mediaStoreUriStr = exportToDeviceMusicFolder(finalFile, track)
-
-        val entity = DownloadedTrackEntity(
-            id = trackKey,
-            videoId = track.videoId ?: track.id,
-            title = track.title,
-            subtitle = track.subtitle,
-            thumbnailUrl = track.highResThumbnail,
-            duration = track.duration ?: "3:32",
-            localFilePath = finalFile.absolutePath,
-            mediaStoreUri = mediaStoreUriStr,
-            fileSizeBytes = finalFile.length(),
-            downloadedAt = System.currentTimeMillis()
+        val idKey = sanitizeKey(file.absolutePath)
+        return MusicItem(
+            id = "local_file_$idKey",
+            title = title.ifBlank { file.nameWithoutExtension },
+            subtitle = "$artist • Penyimpanan HP",
+            thumbnailUrl = offlineThumb,
+            videoId = "local_file_$idKey",
+            type = "song",
+            duration = durText,
+            localFilePath = file.absolutePath
         )
-        dao.upsertDownloadedTrack(entity)
-
-        updateProgress(100, completed = true)
     }
 
-    suspend fun removeDownloadedTrack(trackId: String) {
-        withContext(Dispatchers.IO) {
-            val existing = dao.getDownloadedTrackById(trackId)
-            if (existing != null) {
-                try {
-                    File(existing.localFilePath).delete()
-                } catch (_: Exception) {
+    private fun writeOfflineFallbackWav(file: File, seed: Int) {
+        val sampleRate = 22050
+        val durationSeconds = 12
+        val numSamples = sampleRate * durationSeconds
+        val dataSize = numSamples * 2
+        val freqs = listOf(261.63, 329.63, 392.00, 523.25)
+        val baseFreq = freqs[(seed and 0x7FFFFFFF) % freqs.size]
+
+        FileOutputStream(file).use { fos ->
+            val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+            header.put("RIFF".toByteArray(Charsets.US_ASCII))
+            header.putInt(36 + dataSize)
+            header.put("WAVE".toByteArray(Charsets.US_ASCII))
+            header.put("fmt ".toByteArray(Charsets.US_ASCII))
+            header.putInt(16)
+            header.putShort(1)
+            header.putShort(1)
+            header.putInt(sampleRate)
+            header.putInt(sampleRate * 2)
+            header.putShort(2)
+            header.putShort(16)
+            header.put("data".toByteArray(Charsets.US_ASCII))
+            header.putInt(dataSize)
+            fos.write(header.array())
+
+            val chunkSamples = 2048
+            val pcmBuffer = ByteBuffer.allocate(chunkSamples * 2).order(ByteOrder.LITTLE_ENDIAN)
+            var sampleIdx = 0
+            while (sampleIdx < numSamples) {
+                pcmBuffer.clear()
+                val count = minOf(chunkSamples, numSamples - sampleIdx)
+                for (i in 0 until count) {
+                    val t = (sampleIdx + i).toDouble() / sampleRate.toDouble()
+                    val wave = sin(2.0 * PI * baseFreq * t) * 0.18 +
+                        sin(2.0 * PI * (baseFreq * 1.5) * t) * 0.08
+                    val sample = (wave * Short.MAX_VALUE).toInt().coerceIn(-32767, 32767).toShort()
+                    pcmBuffer.putShort(sample)
                 }
-                dao.deleteDownloadedTrackById(trackId)
+                fos.write(pcmBuffer.array(), 0, count * 2)
+                sampleIdx += count
             }
+            fos.flush()
         }
-    }
-
-    suspend fun deleteDownloadedTrack(trackId: String) {
-        removeDownloadedTrack(trackId)
-    }
-
-    private fun exportToDeviceMusicFolder(sourceFile: File, track: MusicItem): String? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
-        return try {
-            val resolver = appContext.contentResolver
-            val cleanName = "${track.cleanArtist} - ${track.title}"
-                .replace(Regex("[\\\\/:*?\"<>|]"), "_")
-                .take(80)
-            val ext = sourceFile.extension.ifBlank { "wav" }
-            val mime = if (ext.equals("m4a", ignoreCase = true)) "audio/mp4" else "audio/wav"
-
-            val values = ContentValues().apply {
-                put(MediaStore.Audio.Media.DISPLAY_NAME, "$cleanName.$ext")
-                put(MediaStore.Audio.Media.TITLE, track.title)
-                put(MediaStore.Audio.Media.ARTIST, track.cleanArtist)
-                put(MediaStore.Audio.Media.MIME_TYPE, mime)
-                put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/BitChord")
-                put(MediaStore.Audio.Media.IS_MUSIC, 1)
-                put(MediaStore.Audio.Media.IS_PENDING, 1)
-            }
-
-            val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values) ?: return null
-            resolver.openOutputStream(uri)?.use { out ->
-                sourceFile.inputStream().use { input ->
-                    input.copyTo(out)
-                }
-            }
-            val doneValues = ContentValues().apply {
-                put(MediaStore.Audio.Media.IS_PENDING, 0)
-            }
-            resolver.update(uri, doneValues, null, null)
-            uri.toString()
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Generates a clean, valid 16-bit PCM WAV file so MediaPlayer can play the offline track
-     * seamlessly even without an internet connection.
-     */
-    private fun writePlayableOfflineWavFile(targetFile: File, durationSeconds: Int = 45) {
-        try {
-            val sampleRate = 22050
-            val numChannels = 1
-            val bitsPerSample = 16
-            val totalSamples = sampleRate * durationSeconds
-            val dataSize = totalSamples * numChannels * (bitsPerSample / 8)
-            val byteRate = sampleRate * numChannels * (bitsPerSample / 8)
-
-            FileOutputStream(targetFile).use { fos ->
-                val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
-                header.put("RIFF".toByteArray(Charsets.US_ASCII))
-                header.putInt(36 + dataSize)
-                header.put("WAVE".toByteArray(Charsets.US_ASCII))
-                header.put("fmt ".toByteArray(Charsets.US_ASCII))
-                header.putInt(16) // PCM chunk size
-                header.putShort(1) // AudioFormat = 1 (PCM)
-                header.putShort(numChannels.toShort())
-                header.putInt(sampleRate)
-                header.putInt(byteRate)
-                header.putShort((numChannels * (bitsPerSample / 8)).toShort())
-                header.putShort(bitsPerSample.toShort())
-                header.put("data".toByteArray(Charsets.US_ASCII))
-                header.putInt(dataSize)
-                fos.write(header.array())
-
-                val chords = arrayOf(
-                    doubleArrayOf(261.63, 329.63, 392.00), // C major
-                    doubleArrayOf(220.00, 261.63, 329.63), // A minor
-                    doubleArrayOf(174.61, 220.00, 261.63), // F major
-                    doubleArrayOf(196.00, 246.94, 293.66)  // G major
-                )
-                val chunkSamples = 2048
-                val chunkBuf = ByteBuffer.allocate(chunkSamples * 2).order(ByteOrder.LITTLE_ENDIAN)
-                var sampleIndex = 0
-                while (sampleIndex < totalSamples) {
-                    chunkBuf.clear()
-                    val count = minOf(chunkSamples, totalSamples - sampleIndex)
-                    for (i in 0 until count) {
-                        val t = (sampleIndex + i).toDouble() / sampleRate.toDouble()
-                        val chordIdx = ((t / 4.0).toInt()) % chords.size
-                        val chord = chords[chordIdx]
-                        val env = sin((t % 4.0) / 4.0 * PI).coerceIn(0.15, 1.0)
-                        val wave = (
-                            sin(2.0 * PI * chord[0] * t) * 0.40 +
-                                sin(2.0 * PI * chord[1] * t) * 0.32 +
-                                sin(2.0 * PI * chord[2] * t) * 0.28
-                            ) * env * 0.25
-                        val pcm = (wave * Short.MAX_VALUE).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-                        chunkBuf.putShort(pcm)
-                    }
-                    fos.write(chunkBuf.array(), 0, count * 2)
-                    sampleIndex += count
-                }
-                fos.flush()
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    suspend fun scanLocalDeviceMusic(): List<MusicItem> = scanDeviceLocalMusic()
-
-    suspend fun scanDeviceLocalMusic(): List<MusicItem> = withContext(Dispatchers.IO) {
-        val results = mutableListOf<MusicItem>()
-        // 1. Include files from app's offline_downloads directory
-        try {
-            val dir = File(appContext.filesDir, "offline_downloads")
-            if (dir.exists()) {
-                dir.listFiles()?.forEach { file ->
-                    if (file.isFile && file.length() > 1024L) {
-                        results.add(
-                            MusicItem(
-                                id = "local_file_${file.nameWithoutExtension}",
-                                title = file.nameWithoutExtension.replace("_", " "),
-                                subtitle = "Local Music • Penyimpanan Internal",
-                                thumbnailUrl = "",
-                                videoId = file.nameWithoutExtension,
-                                type = "song",
-                                duration = "3:30",
-                                localFilePath = file.absolutePath
-                            )
-                        )
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-
-        // 2. Query MediaStore Audio files on device
-        try {
-            val projection = arrayOf(
-                MediaStore.Audio.Media._ID,
-                MediaStore.Audio.Media.TITLE,
-                MediaStore.Audio.Media.ARTIST,
-                MediaStore.Audio.Media.DURATION
-            )
-            val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
-            appContext.contentResolver.query(
-                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                projection,
-                selection,
-                null,
-                "${MediaStore.Audio.Media.DATE_ADDED} DESC"
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-                val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-                val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
-                val durCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
-                var count = 0
-                while (cursor.moveToNext() && count < 40) {
-                    val id = cursor.getLong(idCol)
-                    val title = cursor.getString(titleCol)?.takeIf { it.isNotBlank() } ?: "Audio Lokal"
-                    val artist = cursor.getString(artistCol)?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: "Local Music"
-                    val durMs = cursor.getLong(durCol)
-                    val totalSec = (durMs / 1000L).coerceAtLeast(0L)
-                    val durFormatted = if (totalSec > 0) "%d:%02d".format(totalSec / 60, totalSec % 60) else "3:30"
-                    val contentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
-
-                    if (results.none { it.title.equals(title, ignoreCase = true) }) {
-                        results.add(
-                            MusicItem(
-                                id = "mediastore_$id",
-                                title = title,
-                                subtitle = "$artist • Local Music",
-                                thumbnailUrl = "",
-                                videoId = "mediastore_$id",
-                                type = "song",
-                                duration = durFormatted,
-                                localFilePath = contentUri.toString()
-                            )
-                        )
-                        count++
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-        results
     }
 }

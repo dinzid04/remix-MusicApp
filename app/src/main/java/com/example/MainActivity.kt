@@ -153,6 +153,8 @@ fun BitChordApp(
     val downloadedTracks by homeViewModel.downloadedTracks.collectAsStateWithLifecycle()
     val downloadedTrackIds by homeViewModel.downloadedTrackIds.collectAsStateWithLifecycle()
     val activeDownloads by homeViewModel.activeDownloads.collectAsStateWithLifecycle()
+    val downloadStorageLocation by homeViewModel.downloadStorageLocation.collectAsStateWithLifecycle()
+    val hasAudioPermission by homeViewModel.hasAudioPermission.collectAsStateWithLifecycle()
     val localDeviceTracks by homeViewModel.localDeviceTracks.collectAsStateWithLifecycle()
     val listeningStats by homeViewModel.listeningStats.collectAsStateWithLifecycle()
 
@@ -245,6 +247,10 @@ fun BitChordApp(
                     subscribedArtists = subscribedArtists,
                     recentTracks = recentTracks,
                     artistAvatarMap = artistAvatarMap,
+                    hasAudioPermission = hasAudioPermission,
+                    onAudioPermissionResult = { granted ->
+                        homeViewModel.onAudioPermissionResult(granted, openPlaylistAfterGrant = true)
+                    },
                     onResolveArtistAvatar = homeViewModel::resolveArtistAvatarIfNeeded,
                     downloadedTracks = downloadedTracks,
                     localDeviceTracks = localDeviceTracks,
@@ -443,7 +449,10 @@ fun BitChordApp(
                     homeViewModel.openAccountIntegrationsScreen()
                 },
                 spotifyConnected = spotifyAccount.isConnected,
-                ytMusicConnected = youtubeMusicAccount.isConnected
+                ytMusicConnected = youtubeMusicAccount.isConnected,
+                downloadStorageLocation = downloadStorageLocation,
+                onSelectDownloadStorageLocation = homeViewModel::setDownloadStorageLocation,
+                downloadedTracksCount = downloadedTracks.size
             )
         }
 

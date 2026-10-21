@@ -1655,7 +1655,17 @@ class YtMusicScraper {
         val status = data.optJSONObject("playabilityStatus")?.optString("status")
         if (status != "OK") return null
 
-        val durationSec = data.optJSONObject("videoDetails")?.optString("lengthSeconds")?.toIntOrNull() ?: 0
+        val videoDetails = data.optJSONObject("videoDetails")
+        val durationSec = videoDetails?.optString("lengthSeconds")?.toIntOrNull() ?: 0
+        val thumbsArr = videoDetails?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+        var hdPlayerThumb: String? = null
+        if (thumbsArr != null && thumbsArr.length() > 0) {
+            val bestThumbObj = thumbsArr.optJSONObject(thumbsArr.length() - 1)
+            val rawUrl = bestThumbObj?.optString("url")?.takeIf { it.isNotBlank() }
+            if (!rawUrl.isNullOrBlank()) {
+                hdPlayerThumb = MusicItem.upgradeThumbnailUrl(rawUrl, videoId, MusicItem.Quality.ULTRA)
+            }
+        }
         val afs = data.optJSONObject("streamingData")?.optJSONArray("adaptiveFormats") ?: return null
 
         var m4aTrack: JSONObject? = null
@@ -1689,7 +1699,8 @@ class YtMusicScraper {
             mimeType = mimeType,
             format = if (mimeType.contains("mp4")) "m4a (aac)" else "webm (opus)",
             bitrate = best.optInt("bitrate", 128000),
-            durationSeconds = durationSec
+            durationSeconds = durationSec,
+            thumbnailUrl = hdPlayerThumb
         )
     }
 

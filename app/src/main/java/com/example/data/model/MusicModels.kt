@@ -76,9 +76,9 @@ data class MusicItem(
         get() = upgradeThumbnailUrl(thumbnailUrl, videoId, Quality.ULTRA)
 
     enum class Quality(val googleSize: Int, val ytFile: String) {
-        SMALL(226, "mqdefault.jpg"),
-        HIGH(544, "hqdefault.jpg"),
-        ULTRA(1080, "hqdefault.jpg")
+        SMALL(360, "hqdefault.jpg"),
+        HIGH(720, "hqdefault.jpg"),
+        ULTRA(1080, "maxresdefault.jpg")
     }
 
     companion object {
@@ -87,6 +87,8 @@ data class MusicItem(
             RegexOption.IGNORE_CASE
         )
         private val DURATION_PATTERN = Regex("^\\d{1,2}:\\d{2}(:\\d{2})?$")
+        private val GOOGLE_WH_REGEX = Regex("=w\\d+-h\\d+[^&?\\s]*")
+        private val GOOGLE_S_REGEX = Regex("=s\\d+[^&?\\s]*")
 
         fun sanitizeArtistName(rawSubtitle: String, isCollection: Boolean = false): String {
             if (rawSubtitle.isBlank()) return if (isCollection) "Playlist" else "Artis"
@@ -112,36 +114,52 @@ data class MusicItem(
             quality: Quality = Quality.HIGH
         ): String {
             val raw = url?.trim().orEmpty()
+            if (raw.startsWith("file://") || raw.startsWith("content://") || raw.startsWith("/")) {
+                return raw
+            }
             val clean = if (raw.startsWith("//")) "https:$raw" else raw
             val validVideoId = videoId?.trim()?.takeIf {
                 it.isNotBlank() &&
                     !it.startsWith("UC") &&
                     !it.startsWith("VL") &&
                     !it.startsWith("PL") &&
-                    !it.startsWith("MPRE")
+                    !it.startsWith("MPRE") &&
+                    !it.startsWith("local_")
             }
 
             if (clean.isNotBlank()) {
-                if (clean.contains("lh3.googleusercontent.com")) {
-                    return clean
-                        .replace("=w60-h60", "=w544-h544")
-                        .replace("=w120-h120", "=w544-h544")
-                }
                 if (clean.contains("googleusercontent.com") || clean.contains("ggpht.com")) {
-                    return clean
+                    val targetSize = quality.googleSize
+                    return when {
+                        GOOGLE_WH_REGEX.containsMatchIn(clean) ->
+                            clean.replace(GOOGLE_WH_REGEX, "=w$targetSize-h$targetSize-l90-rj")
+                        GOOGLE_S_REGEX.containsMatchIn(clean) ->
+                            clean.replace(GOOGLE_S_REGEX, "=s$targetSize")
+                        !clean.contains("=") ->
+                            "$clean=w$targetSize-h$targetSize-l90-rj"
+                        else -> clean
+                    }
                 }
                 if (clean.contains("ytimg.com")) {
                     val matchedVid = YT_VI_ID_REGEX.find(clean)?.groupValues?.getOrNull(1)
                         ?: validVideoId
                     if (!matchedVid.isNullOrBlank()) {
-                        return "https://i.ytimg.com/vi/$matchedVid/${quality.ytFile}"
+                        // Keep explicit maxresdefault/sddefault/hq720 if already resolved from /player
+                        if (quality == Quality.ULTRA &&
+                            (clean.contains("maxresdefault") || clean.contains("hq720") || clean.contains("sddefault"))
+                        ) {
+                            return clean.replace("vi_webp", "vi").replace(".webp", ".jpg").substringBefore("?")
+                        }
+                        val ytFile = if (quality == Quality.SMALL) "mqdefault.jpg" else "hqdefault.jpg"
+                        return "https://i.ytimg.com/vi/$matchedVid/$ytFile"
                     }
                     return clean
                 }
                 return clean
             }
             if (!validVideoId.isNullOrBlank()) {
-                return "https://i.ytimg.com/vi/$validVideoId/${quality.ytFile}"
+                val ytFile = if (quality == Quality.SMALL) "mqdefault.jpg" else "hqdefault.jpg"
+                return "https://i.ytimg.com/vi/$validVideoId/$ytFile"
             }
             return ""
         }
@@ -189,7 +207,8 @@ data class AudioStreamInfo(
     val mimeType: String,
     val format: String,
     val bitrate: Int,
-    val durationSeconds: Int
+    val durationSeconds: Int,
+    val thumbnailUrl: String? = null
 )
 
 enum class PlayerSubView {

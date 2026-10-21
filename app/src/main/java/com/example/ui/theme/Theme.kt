@@ -53,7 +53,15 @@ fun BitChordTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = BitChordDarkColorScheme,
         typography = AppTypography,
-        content = content
+        content = {
+            androidx.compose.material3.ProvideTextStyle(
+                value = androidx.compose.ui.text.TextStyle(
+                    fontFamily = SfProDisplayBold,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                ),
+                content = content
+            )
+        }
     )
 }
 

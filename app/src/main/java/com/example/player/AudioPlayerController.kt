@@ -409,15 +409,22 @@ class AudioPlayerController(
         scope.launch {
             val localPath = findLocalOfflinePath(track)
             if (localPath != null) {
+                val localThumb = findLocalOfflineThumbnail(track)
+                val updatedOfflineTrack = if (!localThumb.isNullOrBlank()) {
+                    track.copy(thumbnailUrl = localThumb)
+                } else {
+                    track
+                }
                 startMediaPlayer(
-                    track = track,
+                    track = updatedOfflineTrack,
                     streamInfo = AudioStreamInfo(
                         videoId = track.videoId ?: track.id,
                         url = localPath,
-                        mimeType = "audio/mp4",
-                        format = "Offline • Tersimpan",
+                        mimeType = if (localPath.endsWith(".mp3", ignoreCase = true)) "audio/mpeg" else "audio/mp4",
+                        format = if (localPath.endsWith(".mp3", ignoreCase = true)) "Offline • MP3" else "Offline • Tersimpan",
                         bitrate = 256000,
-                        durationSeconds = parseDurationSeconds(track.duration) ?: 187
+                        durationSeconds = parseDurationSeconds(track.duration) ?: 187,
+                        thumbnailUrl = localThumb
                     )
                 )
                 return@launch
@@ -430,11 +437,35 @@ class AudioPlayerController(
             }
 
             if (streamInfo != null && streamInfo.url.isNotBlank()) {
-                startMediaPlayer(track, streamInfo)
+                val hdThumb = streamInfo.thumbnailUrl?.takeIf { it.isNotBlank() }
+                val updatedTrack = if (
+                    hdThumb != null &&
+                    !track.thumbnailUrl.startsWith("file://") &&
+                    !track.thumbnailUrl.startsWith("content://")
+                ) {
+                    track.copy(thumbnailUrl = hdThumb)
+                } else {
+                    track
+                }
+                startMediaPlayer(updatedTrack, streamInfo)
             } else {
                 startFallbackPlaybackProgress(track)
             }
         }
+    }
+
+    private fun findLocalOfflineThumbnail(track: MusicItem): String? {
+        if (track.thumbnailUrl.startsWith("file://") || track.thumbnailUrl.startsWith("content://")) {
+            return track.thumbnailUrl
+        }
+        val ctx = appContext ?: return null
+        val key = (track.videoId ?: track.id).replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        val thumbDir = File(ctx.filesDir, "offline_thumbnails")
+        val jpg = File(thumbDir, "$key.jpg")
+        if (jpg.exists() && jpg.length() > 256L) {
+            return "file://${jpg.absolutePath}"
+        }
+        return null
     }
 
     private fun findLocalOfflinePath(track: MusicItem): String? {
@@ -447,6 +478,8 @@ class AudioPlayerController(
         val ctx = appContext ?: return null
         val key = (track.videoId ?: track.id).replace(Regex("[^a-zA-Z0-9_-]"), "_")
         val dir = File(ctx.filesDir, "offline_downloads")
+        val mp3 = File(dir, "$key.mp3")
+        if (mp3.exists() && mp3.length() > 1024L) return mp3.absolutePath
         val m4a = File(dir, "$key.m4a")
         if (m4a.exists() && m4a.length() > 1024L) return m4a.absolutePath
         val wav = File(dir, "$key.wav")
@@ -456,6 +489,12 @@ class AudioPlayerController(
 
     private fun startMediaPlayer(track: MusicItem, streamInfo: AudioStreamInfo) {
         try {
+            _playerState.update { st ->
+                val updatedQueue = st.queue.map { qItem ->
+                    if (qItem.id == track.id) track else qItem
+                }
+                st.copy(currentTrack = track, queue = updatedQueue)
+            }
             val vol = _playerState.value.volumeFraction
             val mpGain = if (audioManager != null) {
                 if (vol <= 0.005f) 0f else 1f
@@ -483,6 +522,7 @@ class AudioPlayerController(
                         ?: 187
                     _playerState.update {
                         it.copy(
+                            currentTrack = track,
                             isPlaying = true,
                             isLoading = false,
                             durationSec = totalSec,

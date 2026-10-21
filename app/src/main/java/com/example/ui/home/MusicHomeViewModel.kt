@@ -199,11 +199,23 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
         initialValue = emptyList()
     )
 
-    val downloadedTracks: StateFlow<List<DownloadedTrackItem>> = repository.downloadedTracksFlow.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
-    )
+    val downloadedTracks: StateFlow<List<DownloadedTrackItem>> = repository.downloadedTracksFlow
+        .map { list ->
+            list.map { item ->
+                val offlineArt = downloadManager.getOfflineArtworkUri(item.videoId ?: item.id)
+                    ?: downloadManager.getOfflineArtworkUri(item.id)
+                if (!offlineArt.isNullOrBlank()) {
+                    item.copy(thumbnailUrl = offlineArt)
+                } else {
+                    item
+                }
+            }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
 
     val downloadedTrackIds: StateFlow<Set<String>> = repository.downloadedTrackIdsFlow.stateIn(
         scope = viewModelScope,
@@ -212,6 +224,11 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
     )
 
     val activeDownloads: StateFlow<Map<String, ActiveDownloadProgress>> = downloadManager.activeDownloads
+
+    val downloadStorageLocation: StateFlow<com.example.player.DownloadStorageLocation> = downloadManager.storageLocation
+
+    private val _hasAudioPermission = MutableStateFlow(downloadManager.hasAudioStoragePermission())
+    val hasAudioPermission: StateFlow<Boolean> = _hasAudioPermission.asStateFlow()
 
     private val _localDeviceTracks = MutableStateFlow<List<MusicItem>>(emptyList())
     val localDeviceTracks: StateFlow<List<MusicItem>> = _localDeviceTracks.asStateFlow()
@@ -863,33 +880,82 @@ class MusicHomeViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun refreshLocalDeviceMusic() {
         viewModelScope.launch {
-            val scanned = downloadManager.scanLocalDeviceMusic()
-            val downloadedItems = downloadedTracks.value.map { it.toMusicItem() }
-            val combined = (downloadedItems + scanned).distinctBy { it.id }
-            _localDeviceTracks.value = combined
+            val granted = downloadManager.hasAudioStoragePermission()
+            _hasAudioPermission.value = granted
+            val scanned = if (granted) {
+                downloadManager.scanLocalDeviceMusic()
+            } else {
+                emptyList()
+            }
+            _localDeviceTracks.value = scanned
+            val current = _playlistScreenState.value
+            if (current.isVisible && current.playlist?.id == LOCAL_MUSIC_PLAYLIST_ID) {
+                _playlistScreenState.update {
+                    it.copy(
+                        playlist = it.playlist?.copy(
+                            subtitle = "${_username.value}, ${scanned.size} lagu",
+                            authorSubtitle = "${_username.value}, ${scanned.size} lagu",
+                            metaSubtitle = "LOCAL STORAGE • ${scanned.size} TRACKS",
+                            thumbnailUrl = scanned.firstOrNull()?.thumbnailUrl ?: "",
+                            totalTracks = scanned.size,
+                            tracks = scanned
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun onAudioPermissionResult(granted: Boolean, openPlaylistAfterGrant: Boolean = true) {
+        _hasAudioPermission.value = granted || downloadManager.hasAudioStoragePermission()
+        if (_hasAudioPermission.value) {
+            if (openPlaylistAfterGrant) {
+                openLocalMusicPlaylist()
+            } else {
+                refreshLocalDeviceMusic()
+            }
+            _uiMessage.value = "Izin penyimpanan diberikan • Memindai musik lokal HP..."
+        } else {
+            _uiMessage.value = "Izin akses musik diperlukan untuk menampilkan lagu dari penyimpanan HP"
+        }
+    }
+
+    fun setDownloadStorageLocation(location: com.example.player.DownloadStorageLocation) {
+        viewModelScope.launch {
+            val migratedCount = downloadManager.setStorageLocationAndMigrate(location)
+            refreshLocalDeviceMusic()
+            _uiMessage.value = if (migratedCount > 0) {
+                "Lokasi unduhan diubah ke ${location.title} ($migratedCount lagu dipindahkan otomatis)"
+            } else {
+                "Lokasi unduhan diatur ke ${location.title}"
+            }
         }
     }
 
     fun openLocalMusicPlaylist() {
         viewModelScope.launch {
-            val scanned = downloadManager.scanLocalDeviceMusic()
-            val downloadedItems = downloadedTracks.value.map { it.toMusicItem() }
-            val combined = (downloadedItems + scanned).distinctBy { it.id }
-            _localDeviceTracks.value = combined
+            val granted = downloadManager.hasAudioStoragePermission()
+            _hasAudioPermission.value = granted
+            val scanned = if (granted) {
+                downloadManager.scanLocalDeviceMusic()
+            } else {
+                emptyList()
+            }
+            _localDeviceTracks.value = scanned
             _playlistScreenState.value = PlaylistScreenState(
                 isVisible = true,
                 isLoading = false,
                 playlist = PlaylistDetail(
                     id = LOCAL_MUSIC_PLAYLIST_ID,
                     title = "Local Music",
-                    subtitle = "${_username.value}, ${combined.size} lagu",
-                    authorSubtitle = "${_username.value}, ${combined.size} lagu",
-                    metaSubtitle = "PLAYLIST • ${combined.size} TRACKS",
-                    description = "File audio dari penyimpanan lokal & folder Music/BitChord perangkat Anda.",
-                    thumbnailUrl = combined.firstOrNull()?.thumbnailUrl ?: "",
+                    subtitle = "${_username.value}, ${scanned.size} lagu",
+                    authorSubtitle = "${_username.value}, ${scanned.size} lagu",
+                    metaSubtitle = "LOCAL STORAGE • ${scanned.size} TRACKS",
+                    description = "Semua file audio yang dipindai otomatis dari penyimpanan HP Anda.",
+                    thumbnailUrl = scanned.firstOrNull()?.thumbnailUrl ?: "",
                     isAlbum = false,
-                    totalTracks = combined.size,
-                    tracks = combined
+                    totalTracks = scanned.size,
+                    tracks = scanned
                 )
             )
         }

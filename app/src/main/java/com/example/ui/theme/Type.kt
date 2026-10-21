@@ -2,139 +2,141 @@ package com.example.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.example.R
 
-/**
- * Uses native Android Sans-Serif family so that SemiBold (600), Bold (700),
- * ExtraBold (800), and Black (900) render with true heavy stroke weights
- * across titles, menus, cards, and synced lyrics.
- */
-val PlusJakartaSans: FontFamily = FontFamily.SansSerif
+// Exclusive SFPRODISPLAYBOLD.OTF font family across the entire application
+val SfProDisplayBold: FontFamily = FontFamily(
+    Font(R.font.sf_pro_display_bold, FontWeight.Thin),
+    Font(R.font.sf_pro_display_bold, FontWeight.ExtraLight),
+    Font(R.font.sf_pro_display_bold, FontWeight.Light),
+    Font(R.font.sf_pro_display_bold, FontWeight.Normal),
+    Font(R.font.sf_pro_display_bold, FontWeight.Medium),
+    Font(R.font.sf_pro_display_bold, FontWeight.SemiBold),
+    Font(R.font.sf_pro_display_bold, FontWeight.Bold),
+    Font(R.font.sf_pro_display_bold, FontWeight.ExtraBold),
+    Font(R.font.sf_pro_display_bold, FontWeight.Black)
+)
 
-val SpaceGrotesk: FontFamily = FontFamily.SansSerif
+val PlusJakartaSans: FontFamily = SfProDisplayBold
+val SpaceGrotesk: FontFamily = SfProDisplayBold
 
 val AppTypography = Typography(
     displayLarge = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Black,
-        fontSize = 34.sp,
-        lineHeight = 38.sp,
-        letterSpacing = (-0.8).sp,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
+        fontSize = 36.sp,
+        lineHeight = 42.sp,
+        letterSpacing = (-0.5).sp,
         color = TextPrimaryWhite
     ),
     displayMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.ExtraBold,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
         fontSize = 28.sp,
         lineHeight = 34.sp,
-        letterSpacing = (-0.6).sp,
+        letterSpacing = (-0.3).sp,
         color = TextPrimaryWhite
     ),
     displaySmall = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.ExtraBold,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
         fontSize = 24.sp,
         lineHeight = 30.sp,
-        letterSpacing = (-0.5).sp,
         color = TextPrimaryWhite
     ),
     headlineLarge = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.ExtraBold,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
         fontSize = 24.sp,
         lineHeight = 30.sp,
-        letterSpacing = (-0.5).sp,
+        letterSpacing = (-0.3).sp,
         color = TextPrimaryWhite
     ),
     headlineMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 22.sp,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
+        fontSize = 20.sp,
         lineHeight = 26.sp,
-        letterSpacing = (-0.4).sp,
+        letterSpacing = (-0.2).sp,
         color = TextPrimaryWhite
     ),
     headlineSmall = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = SfProDisplayBold,
         fontWeight = FontWeight.Bold,
         fontSize = 18.sp,
         lineHeight = 24.sp,
-        letterSpacing = (-0.3).sp,
         color = TextPrimaryWhite
     ),
     titleLarge = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 20.sp,
-        lineHeight = 25.sp,
-        letterSpacing = (-0.3).sp,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
+        fontSize = 18.sp,
+        lineHeight = 24.sp,
         color = TextPrimaryWhite
     ),
     titleMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.ExtraBold,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
         fontSize = 16.sp,
-        lineHeight = 20.sp,
-        letterSpacing = (-0.25).sp,
+        lineHeight = 22.sp,
         color = TextPrimaryWhite
     ),
     titleSmall = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = SfProDisplayBold,
         fontWeight = FontWeight.Bold,
         fontSize = 14.sp,
-        lineHeight = 18.sp,
-        letterSpacing = (-0.15).sp,
+        lineHeight = 20.sp,
         color = TextPrimaryWhite
     ),
     bodyLarge = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = SfProDisplayBold,
         fontWeight = FontWeight.Bold,
         fontSize = 15.sp,
-        lineHeight = 20.sp,
-        letterSpacing = (-0.1).sp,
+        lineHeight = 22.sp,
         color = TextPrimaryWhite
     ),
     bodyMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 13.5.sp,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
+        fontSize = 13.sp,
         lineHeight = 18.sp,
-        letterSpacing = (-0.1).sp,
         color = TextSecondaryGrey
     ),
     bodySmall = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.SemiBold,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.sp,
         color = TextSecondaryGrey
     ),
     labelLarge = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.ExtraBold,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
         fontSize = 13.sp,
-        lineHeight = 16.sp,
-        letterSpacing = 0.sp,
+        lineHeight = 18.sp,
+        letterSpacing = 0.2.sp,
         color = TextPrimaryWhite
     ),
     labelMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = SfProDisplayBold,
         fontWeight = FontWeight.Bold,
-        fontSize = 11.5.sp,
+        fontSize = 11.sp,
         lineHeight = 14.sp,
-        letterSpacing = 0.sp,
-        color = TextPrimaryWhite
+        letterSpacing = 0.4.sp,
+        color = TextSecondaryGrey
     ),
     labelSmall = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 10.5.sp,
+        fontFamily = SfProDisplayBold,
+        fontWeight = FontWeight.Bold,
+        fontSize = 10.sp,
         lineHeight = 13.sp,
-        letterSpacing = 0.sp,
+        letterSpacing = 0.5.sp,
         color = TextSecondaryGrey
     )
 )
 
+val Typography = AppTypography

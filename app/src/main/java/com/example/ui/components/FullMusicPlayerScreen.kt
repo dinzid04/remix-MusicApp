@@ -26,10 +26,14 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -59,6 +63,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
@@ -76,9 +81,11 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.OndemandVideo
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonOutline
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.CircularProgressIndicator
@@ -547,7 +554,7 @@ fun FullMusicPlayerScreen(
                         }
                 )
 
-                val isGlassOverlayActive = showPlayerMoreOptionsSheet || showSleepTimerOverlay
+                val isGlassOverlayActive = showSleepTimerOverlay
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -911,9 +918,9 @@ fun FullMusicPlayerScreen(
                 } // End of foreground stage Box
 
                 // =========================================================================
-                // 3.5 FLOATING FROSTED-GLASS 3-DOT MENU & SLEEP TIMER OVERLAY (Zero Extra Scrim)
+                // 3.5 SLEEP TIMER FROSTED OVERLAY & 3-DOT BOTTOM SHEET (iOS-Style Bottom Sheet)
                 // =========================================================================
-                if (isGlassOverlayActive) {
+                if (showSleepTimerOverlay) {
                     val glassCardSurface = remember(midAtmosphereColor, bottomAtmosphereColor) {
                         lerp(midAtmosphereColor, Color(0xFF2B222C), 0.52f).copy(alpha = 0.80f)
                     }
@@ -934,378 +941,393 @@ fun FullMusicPlayerScreen(
                             .padding(horizontal = 24.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (showSleepTimerOverlay) {
-                            // SLEEP TIMER GLASS CARD (1:1 with reference screenshot)
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(28.dp))
-                                    .background(glassCardSurface)
-                                    .border(1.dp, glassCardBorder, RoundedCornerShape(28.dp))
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) { /* consume click inside card */ }
-                                    .padding(horizontal = 22.dp, vertical = 24.dp)
-                                    .testTag("player_sleep_timer_card"),
-                                horizontalAlignment = Alignment.CenterHorizontally
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(28.dp))
+                                .background(glassCardSurface)
+                                .border(1.dp, glassCardBorder, RoundedCornerShape(28.dp))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { /* consume click inside card */ }
+                                .padding(horizontal = 22.dp, vertical = 24.dp)
+                                .testTag("player_sleep_timer_card"),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "Sleep timer",
+                                fontFamily = PlusJakartaSans,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 18.5.sp,
+                                color = Color.White,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Spacer(modifier = Modifier.height(20.dp))
+
+                            val pillBg = Color.White.copy(alpha = 0.13f)
+                            val activeLabel = playerState.sleepTimerLabel
+
+                            // Row 1: 10m | 15m
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Text(
-                                    text = "Sleep timer",
-                                    fontFamily = PlusJakartaSans,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 18.5.sp,
-                                    color = Color.White,
-                                    textAlign = TextAlign.Center
-                                )
-
-                                Spacer(modifier = Modifier.height(20.dp))
-
-                                val pillBg = Color.White.copy(alpha = 0.13f)
-                                val activeLabel = playerState.sleepTimerLabel
-
-                                // Row 1: 10m | 15m
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    SleepTimerOptionPill(
-                                        label = "10m",
-                                        isActive = activeLabel == "10m",
-                                        backgroundColor = pillBg,
-                                        onClick = {
-                                            onSetSleepTimerMinutes(10, "10m")
-                                            showSleepTimerOverlay = false
-                                            showPlayerMoreOptionsSheet = false
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("sleep_timer_10m_button")
-                                    )
-                                    SleepTimerOptionPill(
-                                        label = "15m",
-                                        isActive = activeLabel == "15m",
-                                        backgroundColor = pillBg,
-                                        onClick = {
-                                            onSetSleepTimerMinutes(15, "15m")
-                                            showSleepTimerOverlay = false
-                                            showPlayerMoreOptionsSheet = false
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("sleep_timer_15m_button")
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.height(12.dp))
-
-                                // Row 2: 30m | 1h
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    SleepTimerOptionPill(
-                                        label = "30m",
-                                        isActive = activeLabel == "30m",
-                                        backgroundColor = pillBg,
-                                        onClick = {
-                                            onSetSleepTimerMinutes(30, "30m")
-                                            showSleepTimerOverlay = false
-                                            showPlayerMoreOptionsSheet = false
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("sleep_timer_30m_button")
-                                    )
-                                    SleepTimerOptionPill(
-                                        label = "1h",
-                                        isActive = activeLabel == "1h",
-                                        backgroundColor = pillBg,
-                                        onClick = {
-                                            onSetSleepTimerMinutes(60, "1h")
-                                            showSleepTimerOverlay = false
-                                            showPlayerMoreOptionsSheet = false
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("sleep_timer_1h_button")
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.height(12.dp))
-
-                                // Row 3: End of track (full width)
                                 SleepTimerOptionPill(
-                                    label = "End of track",
-                                    isActive = playerState.sleepTimerEndOfTrack,
+                                    label = "10m",
+                                    isActive = activeLabel == "10m",
                                     backgroundColor = pillBg,
                                     onClick = {
-                                        onSetSleepTimerEndOfTrack()
+                                        onSetSleepTimerMinutes(10, "10m")
                                         showSleepTimerOverlay = false
                                         showPlayerMoreOptionsSheet = false
                                     },
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("sleep_timer_end_of_track_button")
+                                        .weight(1f)
+                                        .testTag("sleep_timer_10m_button")
                                 )
-
-                                Spacer(modifier = Modifier.height(22.dp))
-
-                                Text(
-                                    text = "Cancel",
-                                    fontFamily = PlusJakartaSans,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.5.sp,
-                                    color = Color.White,
+                                SleepTimerOptionPill(
+                                    label = "15m",
+                                    isActive = activeLabel == "15m",
+                                    backgroundColor = pillBg,
+                                    onClick = {
+                                        onSetSleepTimerMinutes(15, "15m")
+                                        showSleepTimerOverlay = false
+                                        showPlayerMoreOptionsSheet = false
+                                    },
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .clickable {
-                                            if (playerState.sleepTimerLabel != null || playerState.sleepTimerEndOfTrack) {
-                                                onCancelSleepTimer()
-                                            }
-                                            showSleepTimerOverlay = false
-                                            showPlayerMoreOptionsSheet = false
-                                        }
-                                        .padding(horizontal = 24.dp, vertical = 6.dp)
-                                        .testTag("sleep_timer_cancel_button")
+                                        .weight(1f)
+                                        .testTag("sleep_timer_15m_button")
                                 )
                             }
-                        } else if (showPlayerMoreOptionsSheet) {
-                            // 3-DOT OPTIONS GLASS CARD (1:1 with reference screenshot)
-                            val albumOrTrackContext = remember(track.subtitle, track.title, track.cleanArtist) {
-                                val afterDot = track.subtitle.substringAfter("•", "").trim()
-                                if (afterDot.isNotBlank() && !afterDot.contains("pemutaran", ignoreCase = true) && !afterDot.contains("views", ignoreCase = true)) {
-                                    "${track.cleanArtist} • $afterDot"
-                                } else {
-                                    "${track.cleanArtist} • ${track.title}"
-                                }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Row 2: 30m | 1h
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                SleepTimerOptionPill(
+                                    label = "30m",
+                                    isActive = activeLabel == "30m",
+                                    backgroundColor = pillBg,
+                                    onClick = {
+                                        onSetSleepTimerMinutes(30, "30m")
+                                        showSleepTimerOverlay = false
+                                        showPlayerMoreOptionsSheet = false
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("sleep_timer_30m_button")
+                                )
+                                SleepTimerOptionPill(
+                                    label = "1h",
+                                    isActive = activeLabel == "1h",
+                                    backgroundColor = pillBg,
+                                    onClick = {
+                                        onSetSleepTimerMinutes(60, "1h")
+                                        showSleepTimerOverlay = false
+                                        showPlayerMoreOptionsSheet = false
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("sleep_timer_1h_button")
+                                )
                             }
 
-                            Column(
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Row 3: End of track (full width)
+                            SleepTimerOptionPill(
+                                label = "End of track",
+                                isActive = playerState.sleepTimerEndOfTrack,
+                                backgroundColor = pillBg,
+                                onClick = {
+                                    onSetSleepTimerEndOfTrack()
+                                    showSleepTimerOverlay = false
+                                    showPlayerMoreOptionsSheet = false
+                                },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(28.dp))
-                                    .background(glassCardSurface)
-                                    .border(1.dp, glassCardBorder, RoundedCornerShape(28.dp))
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) { /* consume click inside card */ }
-                                    .padding(vertical = 18.dp)
-                                    .testTag("player_more_options_card")
+                                    .testTag("sleep_timer_end_of_track_button")
+                            )
+
+                            Spacer(modifier = Modifier.height(22.dp))
+
+                            Text(
+                                text = "Cancel",
+                                fontFamily = PlusJakartaSans,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.5.sp,
+                                color = Color.White,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        if (playerState.sleepTimerLabel != null || playerState.sleepTimerEndOfTrack) {
+                                            onCancelSleepTimer()
+                                        }
+                                        showSleepTimerOverlay = false
+                                        showPlayerMoreOptionsSheet = false
+                                    }
+                                    .padding(horizontal = 24.dp, vertical = 6.dp)
+                                    .testTag("sleep_timer_cancel_button")
+                            )
+                        }
+                    }
+                }
+
+                // 3-DOT MENU BOTTOM SHEET (Slides up from bottom like iOS / Reference Image 1)
+                AnimatedVisibility(
+                    visible = showPlayerMoreOptionsSheet && !showSleepTimerOverlay,
+                    enter = fadeIn(tween(220)) + slideInVertically(tween(280, easing = FastOutSlowInEasing)) { it },
+                    exit = fadeOut(tween(180)) + slideOutVertically(tween(240, easing = FastOutSlowInEasing)) { it }
+                ) {
+                    val sheetTopColor = remember(midAtmosphereColor) {
+                        lerp(midAtmosphereColor, Color(0xFF3A3A40), 0.62f).copy(alpha = 0.96f)
+                    }
+                    val sheetBottomColor = remember(bottomAtmosphereColor) {
+                        lerp(bottomAtmosphereColor, Color(0xFF141418), 0.78f).copy(alpha = 0.99f)
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.28f))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
                             ) {
-                                // Top Header: Thumbnail + Title + Artist • Album
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 20.dp)
-                                ) {
-                                    AsyncImage(
-                                        model = effectiveCoverUrl,
-                                        contentDescription = track.title,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .size(52.dp)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(CardPlaceholderDark)
+                                showPlayerMoreOptionsSheet = false
+                            },
+                        contentAlignment = Alignment.BottomCenter
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+                                .background(
+                                    brush = Brush.verticalGradient(
+                                        colors = listOf(sheetTopColor, sheetBottomColor)
                                     )
-                                    Spacer(modifier = Modifier.width(14.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = track.title,
-                                            fontFamily = PlusJakartaSans,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 16.5.sp,
-                                            color = Color.White,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        Text(
-                                            text = albumOrTrackContext,
-                                            fontFamily = PlusJakartaSans,
-                                            fontWeight = FontWeight.SemiBold,
-                                            fontSize = 13.5.sp,
-                                            color = Color.White.copy(alpha = 0.68f),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(16.dp))
-                                HorizontalDivider(
-                                    color = Color.White.copy(alpha = 0.14f),
-                                    thickness = 1.dp,
-                                    modifier = Modifier.padding(horizontal = 20.dp)
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                // 1. Like
-                                PlayerGlassMenuRow(
-                                    icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                    iconTint = if (isFavorite) ActiveHeartCoral else Color.White,
-                                    label = "Like",
-                                    trailingBadge = if (isFavorite) "Liked" else null,
-                                    onClick = {
-                                        onToggleFavorite(track)
-                                        showPlayerMoreOptionsSheet = false
-                                    },
-                                    modifier = Modifier.testTag("player_more_like_button")
+                                .border(
+                                    width = 0.8.dp,
+                                    color = Color.White.copy(alpha = 0.12f),
+                                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
                                 )
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { /* consume click inside bottom sheet */ }
+                                .windowInsetsPadding(WindowInsets.navigationBars)
+                                .verticalScroll(rememberScrollState())
+                                .padding(top = 10.dp, bottom = 18.dp)
+                                .testTag("player_more_options_card")
+                        ) {
+                            // Top Drag Handle Pill
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.CenterHorizontally)
+                                    .width(38.dp)
+                                    .height(4.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(Color.White.copy(alpha = 0.42f))
+                            )
 
-                                // 2. Add to playlist
-                                PlayerGlassMenuRow(
-                                    icon = Icons.Default.Add,
-                                    iconTint = Color.White,
-                                    label = "Add to playlist",
-                                    onClick = {
-                                        showPlayerMoreOptionsSheet = false
-                                        showAddToPlaylistSheet = true
-                                    },
-                                    modifier = Modifier.testTag("player_more_add_to_playlist_button")
-                                )
+                            Spacer(modifier = Modifier.height(14.dp))
 
-                                // 3. Play next
-                                PlayerGlassMenuRow(
-                                    icon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                                    iconTint = Color.White,
-                                    label = "Play next",
-                                    onClick = {
-                                        onPlayNext(track)
-                                        showPlayerMoreOptionsSheet = false
-                                    },
-                                    modifier = Modifier.testTag("player_more_play_next_button")
-                                )
-
-                                // 4. Add to queue
-                                PlayerGlassMenuRow(
-                                    icon = Icons.AutoMirrored.Filled.QueueMusic,
-                                    iconTint = Color.White,
-                                    label = "Add to queue",
-                                    onClick = {
-                                        onAddToQueue(track)
-                                        showPlayerMoreOptionsSheet = false
-                                    },
-                                    modifier = Modifier.testTag("player_more_add_to_queue_button")
-                                )
-
-                                // 5. Open artist
-                                PlayerGlassMenuRow(
-                                    icon = Icons.Default.PersonOutline,
-                                    iconTint = Color.White,
-                                    label = "Open artist",
-                                    onClick = {
-                                        showPlayerMoreOptionsSheet = false
-                                        onClosePlayer()
-                                        onOpenArtistProfile(track.cleanArtist, "")
-                                    },
-                                    modifier = Modifier.testTag("player_more_view_artist_button")
-                                )
-
-                                // 6. Sleep timer
-                                PlayerGlassMenuRow(
-                                    icon = Icons.Default.Bedtime,
-                                    iconTint = Color.White,
-                                    label = "Sleep timer",
-                                    trailingBadge = playerState.sleepTimerLabel,
-                                    onClick = {
-                                        showSleepTimerOverlay = true
-                                    },
-                                    modifier = Modifier.testTag("player_more_sleep_timer_button")
-                                )
-
-                                Spacer(modifier = Modifier.height(6.dp))
-                                HorizontalDivider(
-                                    color = Color.White.copy(alpha = 0.10f),
-                                    thickness = 0.8.dp,
-                                    modifier = Modifier.padding(horizontal = 20.dp)
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-
-                                // Compact quick-utility pills for Video Mode, Offline Download, and HD Cover
-                                Row(
+                            // Top Header: Rounded Square Thumbnail + Song Title + Artist Name
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp)
+                            ) {
+                                AsyncImage(
+                                    model = effectiveCoverUrl,
+                                    contentDescription = track.title,
+                                    contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 20.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(
-                                                if (isVideoModeActive) ActiveHeartCoral.copy(alpha = 0.25f)
-                                                else Color.White.copy(alpha = 0.10f)
-                                            )
-                                            .clickable {
-                                                onToggleVideoMode()
-                                                showPlayerMoreOptionsSheet = false
-                                            }
-                                            .padding(vertical = 10.dp, horizontal = 8.dp)
-                                            .testTag("player_more_toggle_video_button"),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                imageVector = if (isVideoModeActive) Icons.Default.Image else Icons.Default.OndemandVideo,
-                                                contentDescription = null,
-                                                tint = Color.White,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = if (isVideoModeActive) "Cover Mode" else "Video Mode",
-                                                fontFamily = PlusJakartaSans,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 12.sp,
-                                                color = Color.White,
-                                                maxLines = 1
-                                            )
-                                        }
-                                    }
-
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(Color.White.copy(alpha = 0.10f))
-                                            .clickable {
-                                                if (activeDownloadProgress == null) {
-                                                    if (isDownloaded) onRemoveDownload(track.id)
-                                                    else onDownloadTrack(track)
-                                                    showPlayerMoreOptionsSheet = false
-                                                }
-                                            }
-                                            .padding(vertical = 10.dp, horizontal = 8.dp)
-                                            .testTag("player_more_download_button"),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                imageVector = if (isDownloaded) Icons.Rounded.DownloadDone else Icons.Rounded.Download,
-                                                contentDescription = null,
-                                                tint = if (isDownloaded) Color(0xFF38EF7D) else Color.White,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = when {
-                                                    activeDownloadProgress != null -> "${activeDownloadProgress.progressPercent}%"
-                                                    isDownloaded -> "Downloaded"
-                                                    else -> "Download"
-                                                },
-                                                fontFamily = PlusJakartaSans,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 12.sp,
-                                                color = Color.White,
-                                                maxLines = 1
-                                            )
-                                        }
-                                    }
+                                        .size(50.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(CardPlaceholderDark)
+                                )
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = track.title,
+                                        fontFamily = PlusJakartaSans,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 16.sp,
+                                        color = Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = track.cleanArtist,
+                                        fontFamily = PlusJakartaSans,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.5.sp,
+                                        color = Color.White.copy(alpha = 0.72f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+                            HorizontalDivider(
+                                color = Color.White.copy(alpha = 0.09f),
+                                thickness = 0.8.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            // Convert to audio / Switch to video
+                            PlayerGlassMenuRow(
+                                icon = if (isVideoModeActive) Icons.Default.MusicNote else Icons.Default.OndemandVideo,
+                                iconTint = Color.White,
+                                label = if (isVideoModeActive) "Convert to audio" else "Switch to video",
+                                onClick = {
+                                    onToggleVideoMode()
+                                    showPlayerMoreOptionsSheet = false
+                                },
+                                modifier = Modifier.testTag("player_more_toggle_video_button")
+                            )
+
+                            HorizontalDivider(
+                                color = Color.White.copy(alpha = 0.08f),
+                                thickness = 0.8.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            // 1. Like
+                            PlayerGlassMenuRow(
+                                icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                iconTint = if (isFavorite) ActiveHeartCoral else Color.White,
+                                label = "Like",
+                                trailingBadge = if (isFavorite) "Liked" else null,
+                                onClick = {
+                                    onToggleFavorite(track)
+                                    showPlayerMoreOptionsSheet = false
+                                },
+                                modifier = Modifier.testTag("player_more_like_button")
+                            )
+
+                            // 2. Add to playlist
+                            PlayerGlassMenuRow(
+                                icon = Icons.AutoMirrored.Filled.PlaylistAdd,
+                                iconTint = Color.White,
+                                label = "Add to playlist",
+                                onClick = {
+                                    showPlayerMoreOptionsSheet = false
+                                    showAddToPlaylistSheet = true
+                                },
+                                modifier = Modifier.testTag("player_more_add_to_playlist_button")
+                            )
+
+                            HorizontalDivider(
+                                color = Color.White.copy(alpha = 0.08f),
+                                thickness = 0.8.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            // 3. Download
+                            PlayerGlassMenuRow(
+                                icon = if (isDownloaded) Icons.Rounded.DownloadDone else Icons.Rounded.Download,
+                                iconTint = if (isDownloaded) Color(0xFF38EF7D) else Color.White,
+                                label = when {
+                                    activeDownloadProgress != null -> "Downloading (${activeDownloadProgress.progressPercent}%)"
+                                    isDownloaded -> "Downloaded"
+                                    else -> "Download"
+                                },
+                                trailingBadge = if (isDownloaded) "Remove" else null,
+                                onClick = {
+                                    if (activeDownloadProgress == null) {
+                                        if (isDownloaded) onRemoveDownload(track.id)
+                                        else onDownloadTrack(track)
+                                        showPlayerMoreOptionsSheet = false
+                                    }
+                                },
+                                modifier = Modifier.testTag("player_more_download_button")
+                            )
+
+                            // 4. Play next
+                            PlayerGlassMenuRow(
+                                icon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                                iconTint = Color.White,
+                                label = "Play next",
+                                onClick = {
+                                    onPlayNext(track)
+                                    showPlayerMoreOptionsSheet = false
+                                },
+                                modifier = Modifier.testTag("player_more_play_next_button")
+                            )
+
+                            // 5. Add to queue
+                            PlayerGlassMenuRow(
+                                icon = Icons.AutoMirrored.Filled.QueueMusic,
+                                iconTint = Color.White,
+                                label = "Add to queue",
+                                onClick = {
+                                    onAddToQueue(track)
+                                    showPlayerMoreOptionsSheet = false
+                                },
+                                modifier = Modifier.testTag("player_more_add_to_queue_button")
+                            )
+
+                            // 6. Open artist
+                            PlayerGlassMenuRow(
+                                icon = Icons.Default.Person,
+                                iconTint = Color.White,
+                                label = "Open artist",
+                                onClick = {
+                                    showPlayerMoreOptionsSheet = false
+                                    onClosePlayer()
+                                    onOpenArtistProfile(track.cleanArtist, "")
+                                },
+                                modifier = Modifier.testTag("player_more_view_artist_button")
+                            )
+
+                            // 7. Sleep timer
+                            PlayerGlassMenuRow(
+                                icon = Icons.Default.Bedtime,
+                                iconTint = Color.White,
+                                label = "Sleep timer",
+                                trailingBadge = playerState.sleepTimerLabel,
+                                onClick = {
+                                    showSleepTimerOverlay = true
+                                },
+                                modifier = Modifier.testTag("player_more_sleep_timer_button")
+                            )
+
+                            // 8. Share
+                            PlayerGlassMenuRow(
+                                icon = Icons.Default.Share,
+                                iconTint = Color.White,
+                                label = "Share",
+                                onClick = {
+                                    showPlayerMoreOptionsSheet = false
+                                    try {
+                                        val vid = track.videoId ?: track.id
+                                        val shareUrl = "https://music.youtube.com/watch?v=$vid"
+                                        val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(
+                                                android.content.Intent.EXTRA_TEXT,
+                                                "${track.title} - ${track.cleanArtist}\n$shareUrl"
+                                            )
+                                        }
+                                        context.startActivity(
+                                            android.content.Intent.createChooser(sendIntent, "Share ${track.title}")
+                                        )
+                                    } catch (_: Exception) {
+                                    }
+                                },
+                                modifier = Modifier.testTag("player_more_share_button")
+                            )
                         }
                     }
                 }
